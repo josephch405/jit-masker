@@ -1,0 +1,6 @@
+pytorch=1.5
+torchvision
+numpy
+scikit-image 0.14.0
+PIL 5.2.0
+glob  
