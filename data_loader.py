@@ -11,6 +11,7 @@ import torchvision
 from torchvision import transforms, utils
 from PIL import Image
 import cv2
+# cv2.setNumThreads(0)
 #==========================dataset load==========================
 class RescaleT(object):
 
@@ -42,7 +43,8 @@ class RescaleT(object):
 		if label:
 			lbl = transform.resize(label,(self.output_size,self.output_size),mode='constant', order=0, preserve_range=True)
 		else:
-			lbl = None
+			lbl = label
+
 		return {'imidx':imidx, 'image':img,'label':lbl}
 
 class Rescale(object):
@@ -150,7 +152,7 @@ class ToTensorLab(object):
 			tmpLbl = label.transpose((2, 0, 1))
 			tmpLbl = torch.from_numpy(tmpLbl)
 		else:
-			tmpLbl = None
+			tmpLbl = label
 
 		# change the color space
 		if self.flag == 2: # with rgb and Lab colors
@@ -272,7 +274,7 @@ class SalObjDataset(Dataset):
 
 # TODO: This flow straight up is broken as cv2 videos do not play nice with
 # NB: for now, only represents a single video. Indices index into the frames
-class SalObjVideoDataset(object):
+class SalObjVideoIterable(IterableDataset):
 	def __init__(self,video_name,lbl_name=None,transform=None):
 		# Video label not supported yet
 		self.video_name = video_name
@@ -299,14 +301,13 @@ class SalObjVideoDataset(object):
 		if not succ:
 			raise StopIteration
 
-		label = None
+		label = 0
 
 		image = image[:,:,::-1]
 		# print(image.shape)
 
-		sample = {'imidx':imgidx, 'image':image, 'label':label}
+		sample = {'imidx':imgidx, 'image':image.copy(), 'label':label}
 
 		if self.transform:
 			sample = self.transform(sample)
-
-		return {**sample, 'orig_image': image}
+		return {**sample, 'orig_image': image.copy()}

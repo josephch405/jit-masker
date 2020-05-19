@@ -10,6 +10,7 @@ from torchvision import transforms#, utils
 # import torch.optim as optim
 
 import cv2
+# cv2.setNumThreads(0)
 import numpy as np
 from PIL import Image
 from PIL import ImageChops
@@ -17,7 +18,7 @@ import glob
 
 from data_loader import RescaleT
 from data_loader import ToTensorLab
-from data_loader import SalObjVideoDataset
+from data_loader import SalObjVideoIterable
 
 from models import U2NET # full size version 173.6 MB
 from models import U2NETP # small version u2net 4.7 MB
@@ -35,6 +36,8 @@ def normPRED(d):
 img_bg = io.imread("data/example_bgs/tokyo.jpg")
 img_bg = Image.fromarray(img_bg)
 
+cv2.namedWindow("im")
+
 def save_output(image_name,pred,orig,d_dir,width=None, height=None):
 
     predict = pred
@@ -44,7 +47,7 @@ def save_output(image_name,pred,orig,d_dir,width=None, height=None):
     im = Image.fromarray(predict_np*255).convert('RGB')
     img_name = image_name.split("/")[-1]
     
-    image = orig
+    image = orig.cpu().data.numpy()[0]
     imo = im.resize((image.shape[1],image.shape[0]),resample=Image.BICUBIC)
     img_bg_local = img_bg.resize((image.shape[1],image.shape[0]),resample=Image.BICUBIC)
     # if not width and not height:
@@ -65,15 +68,14 @@ def save_output(image_name,pred,orig,d_dir,width=None, height=None):
     imidx = bbb[0]
     for i in range(1,len(bbb)):
         imidx = imidx + "." + bbb[i]
-    cv2.namedWindow("im")
     cv2.imshow("im", np.array(imo)[:,:,::-1])
-    cv2.waitKey(0)
+    cv2.waitKey(1)
     # imo.save(d_dir+imidx+'.jpg')
 
 def main():
 
     # --------- 1. get image path and name ---------
-    model_name='u2netp'#u2netp
+    model_name='u2net'#u2netp
 
     # TODO: make input to script
     video_path = './data/example_videos/v0.mp4'
@@ -82,15 +84,14 @@ def main():
 
     # --------- 2. dataloader ---------
     #1. dataloader
-    test_salobj_dataset = SalObjVideoDataset(video_path,
+    test_salobj_dataset = SalObjVideoIterable(video_path,
                                         transform=transforms.Compose([RescaleT(320),
                                                                       ToTensorLab(flag=0)])
                                         )
-    # batch_size = 1
-    # test_salobj_dataloader = DataLoader(test_salobj_dataset,
-    #                                     batch_size=batch_size,
-    #                                     shuffle=False,
-    #                                     num_workers=1)
+    batch_size = 1
+    test_salobj_dataloader = DataLoader(test_salobj_dataset,
+                                        shuffle=False,
+                                        num_workers=0)
 
     # --------- 3. model define ---------
     if(model_name=='u2net'):
@@ -105,11 +106,11 @@ def main():
     net.eval()
 
     # --------- 4. inference for each image ---------
-    for i_test, data_test in enumerate(test_salobj_dataset):
+    for i_test, data_test in enumerate(test_salobj_dataloader):
 
         print("inferencing frame:", i_test)
         # print("dl:", datetime.now()-a)
-        inputs_test = data_test['image'].unsqueeze(0)
+        inputs_test = data_test['image']
         inputs_test = inputs_test.type(torch.FloatTensor)
         if torch.cuda.is_available():
             inputs_test = inputs_test.cuda()
