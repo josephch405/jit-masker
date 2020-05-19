@@ -6,10 +6,11 @@ import numpy as np
 import random
 import math
 import matplotlib.pyplot as plt
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, IterableDataset
 import torchvision
 from torchvision import transforms, utils
 from PIL import Image
+import cv2
 #==========================dataset load==========================
 class RescaleT(object):
 
@@ -37,8 +38,11 @@ class RescaleT(object):
 		# lbl = transform.resize(label,(new_h,new_w),mode='constant', order=0, preserve_range=True)
 
 		img = transform.resize(image,(self.output_size,self.output_size),mode='constant')
-		lbl = transform.resize(label,(self.output_size,self.output_size),mode='constant', order=0, preserve_range=True)
 
+		if label:
+			lbl = transform.resize(label,(self.output_size,self.output_size),mode='constant', order=0, preserve_range=True)
+		else:
+			lbl = None
 		return {'imidx':imidx, 'image':img,'label':lbl}
 
 class Rescale(object):
@@ -134,12 +138,19 @@ class ToTensorLab(object):
 
 		imidx, image, label =sample['imidx'], sample['image'], sample['label']
 
-		tmpLbl = np.zeros(label.shape)
+		if label:
+			tmpLbl = np.zeros(label.shape)
 
-		if(np.max(label)<1e-6):
-			label = label
+			if(np.max(label)<1e-6):
+				label = label
+			else:
+				label = label/np.max(label)
+
+			tmpLbl[:,:,0] = label[:,:,0]
+			tmpLbl = label.transpose((2, 0, 1))
+			tmpLbl = torch.from_numpy(tmpLbl)
 		else:
-			label = label/np.max(label)
+			tmpLbl = None
 
 		# change the color space
 		if self.flag == 2: # with rgb and Lab colors
@@ -207,14 +218,12 @@ class ToTensorLab(object):
 				tmpImg[:,:,2] = (image[:,:,2]-0.406)/0.225
 			# return {'imidx':torch.from_numpy(imidx), 'image': torch.from_numpy(tmpImg), 'label': torch.from_numpy(tmpLbl)}
 
-		tmpLbl[:,:,0] = label[:,:,0]
 
 		# change the r,g,b to b,r,g from [0,255] to [0,1]
 		#transforms.Normalize(mean = (0.485, 0.456, 0.406), std = (0.229, 0.224, 0.225))
 		tmpImg = tmpImg.transpose((2, 0, 1))
-		tmpLbl = label.transpose((2, 0, 1))
 
-		return {'imidx':torch.from_numpy(imidx), 'image': torch.from_numpy(tmpImg), 'label': torch.from_numpy(tmpLbl)}
+		return {'imidx':torch.from_numpy(imidx), 'image': torch.from_numpy(tmpImg), 'label': tmpLbl}
 
 class SalObjDataset(Dataset):
 	def __init__(self,img_name_list,lbl_name_list,transform=None):
@@ -261,50 +270,43 @@ class SalObjDataset(Dataset):
 
 		return sample
 
+# TODO: This flow straight up is broken as cv2 videos do not play nice with
 # NB: for now, only represents a single video. Indices index into the frames
-class SalObjVideoDataset(Dataset):
-	def __init__(self,video_name,lbl_name,transform=None):
-		# self.root_dir = root_dir
-		# self.image_name_list = glob.glob(image_dir+'*.png')
-		# self.label_name_list = glob.glob(label_dir+'*.png')
+class SalObjVideoDataset(object):
+	def __init__(self,video_name,lbl_name=None,transform=None):
+		# Video label not supported yet
 		self.video_name = video_name
-		self.label_name = lbl_name
+		# self.label_name = lbl_name
 		self.transform = transform
-		self.video, self._audio, self._metadata = torchvision.io.read_video(self.video_name)
+		self.imgidx = 0
+		self.video = cv2.VideoCapture(video_name)
 
 	def __len__(self):
-		return self.video.shape[0]
+		return int(self.video.get(cv2.CAP_PROP_FRAME_COUNT))
 
-	def __getitem__(self,idx):
+	def __iter__(self):
+		return self
+
+	def __next__(self):
 
 		# image = Image.open(self.image_name_list[idx])#io.imread(self.image_name_list[idx])
 		# label = Image.open(self.label_name_list[idx])#io.imread(self.label_name_list[idx])
 
 		# vidname = self.video_name_list[idx]
-		imgidx = np.array([idx])
-		image = self.video[idx]
+		imgidx = np.array([self.imgidx])
+		self.imgidx += 1
+		succ, image = self.video.read()
+		if not succ:
+			raise StopIteration
 
-		if(not self.label_name):
-			label_3 = np.zeros(self.video.shape)
-		else:
-			# TODO: handle potentially reading labels along with videos
-			label_3 = io.imread(self.label_name_list[idx])
+		label = None
 
-		label = np.zeros(label_3.shape[0:2])
-		if(3==len(label_3.shape)):
-			label = label_3[:,:,0]
-		elif(2==len(label_3.shape)):
-			label = label_3
-		# TODO: None of this probably works for videos
-		if(3==len(image.shape) and 2==len(label.shape)):
-			label = label[:,:,np.newaxis]
-		elif(2==len(image.shape) and 2==len(label.shape)):
-			image = image[:,:,np.newaxis]
-			label = label[:,:,np.newaxis]
+		image = image[:,:,::-1]
+		# print(image.shape)
 
 		sample = {'imidx':imgidx, 'image':image, 'label':label}
 
 		if self.transform:
 			sample = self.transform(sample)
 
-		return sample
+		return {**sample, 'orig_image': image}
