@@ -18,6 +18,22 @@ class REBNCONV(nn.Module):
 
         return xout
 
+class PLN(nn.Module):#UNet07DRES(nn.Module):
+
+    def __init__(self, in_ch=3, mid_ch=12, out_ch=3):
+        super(PLN,self).__init__()
+
+        self.rebnconvin = REBNCONV(in_ch,mid_ch,dirate=1)
+        self.rebnconvout = REBNCONV(mid_ch,out_ch,dirate=1)
+
+    def forward(self,x):
+
+        hx = x
+        hxin = self.rebnconvin(hx)
+        hxout = self.rebnconvout(hxin)
+
+        return hxout
+
 ### RSU-7 ###
 class RSU7(nn.Module):#UNet07DRES(nn.Module):
 
@@ -456,6 +472,117 @@ class U2NETP(nn.Module):
         self.stage3d = RSU5(128,16,64)
         self.stage2d = RSU6(128,16,64)
         self.stage1d = RSU7(128,16,64)
+
+        self.side1 = nn.Conv2d(64,1,3,padding=1)
+        self.side2 = nn.Conv2d(64,1,3,padding=1)
+        self.side3 = nn.Conv2d(64,1,3,padding=1)
+        self.side4 = nn.Conv2d(64,1,3,padding=1)
+        self.side5 = nn.Conv2d(64,1,3,padding=1)
+        self.side6 = nn.Conv2d(64,1,3,padding=1)
+
+        self.upscore6 = nn.Upsample(scale_factor=32,mode='bilinear')
+        self.upscore5 = nn.Upsample(scale_factor=16,mode='bilinear')
+        self.upscore4 = nn.Upsample(scale_factor=8,mode='bilinear')
+        self.upscore3 = nn.Upsample(scale_factor=4,mode='bilinear')
+        self.upscore2 = nn.Upsample(scale_factor=2, mode='bilinear')
+
+        self.outconv = nn.Conv2d(6,1,1)
+
+    def forward(self,x):
+
+        hx = x
+
+        #stage 1
+        hx1 = self.stage1(hx)
+        hx = self.pool12(hx1)
+
+        #stage 2
+        hx2 = self.stage2(hx)
+        hx = self.pool23(hx2)
+
+        #stage 3
+        hx3 = self.stage3(hx)
+        hx = self.pool34(hx3)
+
+        #stage 4
+        hx4 = self.stage4(hx)
+        hx = self.pool45(hx4)
+
+        #stage 5
+        hx5 = self.stage5(hx)
+        hx = self.pool56(hx5)
+
+        #stage 6
+        hx6 = self.stage6(hx)
+        hx6up = self.upscore2(hx6)
+
+        #decoder
+        hx5d = self.stage5d(torch.cat((hx6up,hx5),1))
+        hx5dup = self.upscore2(hx5d)
+
+        hx4d = self.stage4d(torch.cat((hx5dup,hx4),1))
+        hx4dup = self.upscore2(hx4d)
+
+        hx3d = self.stage3d(torch.cat((hx4dup,hx3),1))
+        hx3dup = self.upscore2(hx3d)
+
+        hx2d = self.stage2d(torch.cat((hx3dup,hx2),1))
+        hx2dup = self.upscore2(hx2d)
+
+        hx1d = self.stage1d(torch.cat((hx2dup,hx1),1))
+
+
+        #side output
+        d1 = self.side1(hx1d)
+
+        d2 = self.side2(hx2d)
+        d2 = self.upscore2(d2)
+
+        d3 = self.side3(hx3d)
+        d3 = self.upscore3(d3)
+
+        d4 = self.side4(hx4d)
+        d4 = self.upscore4(d4)
+
+        d5 = self.side5(hx5d)
+        d5 = self.upscore5(d5)
+
+        d6 = self.side6(hx6)
+        d6 = self.upscore6(d6)
+
+        d0 = self.outconv(torch.cat((d1,d2,d3,d4,d5,d6),1))
+        # d00 = d0 + self.refconv(d0)
+
+        return F.sigmoid(d0), F.sigmoid(d1), F.sigmoid(d2), F.sigmoid(d3), F.sigmoid(d4), F.sigmoid(d5), F.sigmoid(d6)
+
+class U2NETP_short(nn.Module):
+
+    def __init__(self,in_ch=3,out_ch=1):
+        super(U2NETP_short,self).__init__()
+
+        self.stage1 = PLN(in_ch,16,64)
+        self.pool12 = nn.MaxPool2d(2,stride=2,ceil_mode=True)
+
+        self.stage2 = PLN(64,16,64)
+        self.pool23 = nn.MaxPool2d(2,stride=2,ceil_mode=True)
+
+        self.stage3 = PLN(64,16,64)
+        self.pool34 = nn.MaxPool2d(2,stride=2,ceil_mode=True)
+
+        self.stage4 = PLN(64,16,64)
+        self.pool45 = nn.MaxPool2d(2,stride=2,ceil_mode=True)
+
+        self.stage5 = PLN(64,16,64)
+        self.pool56 = nn.MaxPool2d(2,stride=2,ceil_mode=True)
+
+        self.stage6 = PLN(64,16,64)
+
+        # decoder
+        self.stage5d = PLN(128,16,64)
+        self.stage4d = PLN(128,16,64)
+        self.stage3d = PLN(128,16,64)
+        self.stage2d = PLN(128,16,64)
+        self.stage1d = PLN(128,16,64)
 
         self.side1 = nn.Conv2d(64,1,3,padding=1)
         self.side2 = nn.Conv2d(64,1,3,padding=1)
