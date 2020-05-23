@@ -23,10 +23,10 @@ from models import U2NETP_short
 
 # import torch.optim as optim
 
-student_inference_queue = queue.Queue(1)
+student_inference_queue = queue.Queue(3)
 
-orig_image_queue = queue.Queue(2)
-student_result_queue = queue.Queue(1)
+orig_image_queue = queue.Queue()
+student_result_queue = queue.Queue(3)
 
 
 # normalize the predicted SOD probability map
@@ -71,55 +71,72 @@ def paint_output(image_name,pred,orig,d_dir,width=None, height=None):
 def cv2_thread_func(video_name, output_size=320):
     video = cv2.VideoCapture(video_name)
     images_in_flight = []
-    while True:
-        succ, image = video.read()
-        image = image[:,:,::-1]
+    try:
+        while True:
+            succ, image = video.read()
+            # image = cv2.resize(image,
+            #     (image.shape[1] * 320 // image.shape[0], 320),
+            #     interpolation=cv2.INTER_AREA)
 
-        orig_image = image.copy()
-        orig_image_queue.put(orig_image)
+            image = image[:,:,::-1]
 
-        resized_img = Image.fromarray(image).convert('RGB')
-        resized_img = resized_img.resize((output_size,output_size),resample=Image.BILINEAR)
-        resized_img = np.array(resized_img)
-        
-        image = resized_img/np.max(resized_img)
-        tmpImg = np.zeros((image.shape[0],image.shape[1],3))
-        tmpImg[:,:,0] = (image[:,:,0]-0.485)/0.229
-        tmpImg[:,:,1] = (image[:,:,1]-0.456)/0.224
-        tmpImg[:,:,2] = (image[:,:,2]-0.406)/0.225
+            orig_image = image.copy()
+            orig_image_queue.put(orig_image)
 
-        # RGB to BRG
-        tmpImg = tmpImg.transpose((2, 0, 1))
+            resized_img = Image.fromarray(image).convert('RGB')
+            resized_img = resized_img.resize((output_size,output_size),resample=Image.NEAREST)
+            resized_img = np.array(resized_img)
+            
+            image = resized_img/np.max(resized_img)
+            tmpImg = np.zeros((image.shape[0],image.shape[1],3))
+            tmpImg[:,:,0] = (image[:,:,0]-0.485)/0.229
+            tmpImg[:,:,1] = (image[:,:,1]-0.456)/0.224
+            tmpImg[:,:,2] = (image[:,:,2]-0.406)/0.225
 
-        student_inference_queue.put({
-            # "orig_image": orig_image,
-            "image": torch.from_numpy(tmpImg)
-        })
-        # try:
-        #     pred_mask = student_result_queue.get_nowait()
-        #     # if pred_mask:
-        #     orig_image = images_in_flight.pop(0)
-        #     merged_image = paint_output("", pred_mask, orig_image, "")
-        #     cv2.imshow("im", merged_image[:,:,::-1])
-        #     print("time to paint:", datetime.now() - t)
-        #     t = datetime.now()
-        #     cv2.waitKey(1)
-        # except:
-        #     # No frame yet
-        #     print("no frame")
-        #     continue
+            # RGB to BRG
+            tmpImg = tmpImg.transpose((2, 0, 1))
+
+            student_inference_queue.put({
+                # "orig_image": orig_image,
+                "image": torch.from_numpy(tmpImg)
+            })
+    except:
+        print("CV2 reader hard exit")
+        student_inference_queue.put("kill")
+        orig_image_queue.put("kill")
+    exit()
 
 def paint_thread_func():
     cv2.namedWindow("im")
+    vid_out = None
+    # TODO: make flag for video saving params
+    keep_vid = False
     t = datetime.now()
     while True:
         orig_image = orig_image_queue.get()
+        if not vid_out and keep_vid:
+            vid_out = cv2.VideoWriter("out.mp4",
+                cv2.VideoWriter_fourcc('M', 'P', '4', 'V'),
+                # TODO: get fps from cv2 thread message
+                25, (orig_image.shape[1], orig_image.shape[0]))
         pred_mask = student_result_queue.get()
-        merged_image = paint_output("", pred_mask, orig_image, "")
-        cv2.imshow("im", merged_image[:,:,::-1])
+        if (orig_image == "kill") or (pred_mask == "kill"):
+            print("Drawer exiting gracefully")
+            break
+        pred_mask = torch.clamp(pred_mask * 3 - 2, 0, 1)
+        merged_image = paint_output("", pred_mask, orig_image, "")[:,:,::-1]
+        cv2.imshow("im", merged_image)
         # print("time to paint:", datetime.now() - t)
         t = datetime.now()
-        cv2.waitKey(1)
+        if vid_out:
+            vid_out.write(merged_image)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+    print("Writer released")
+    cv2.destroyAllWindows()
+    if vid_out:
+        vid_out.release()
+    exit()
 
 def main():
 
@@ -127,8 +144,8 @@ def main():
     model_name='u2net'#u2netp
 
     # TODO: make input to script
-    video_path = 0 # for local camera
-    # video_path = './data/example_videos/v0.mp4'
+    # video_path = 0 # for local camera
+    video_path = './data/example_videos/v0.mp4'
     # video_path = "http://10.1.10.17:8080/video" # IP camera
     prediction_dir = './data/out/'
     model_dir = './saved_models/'+ model_name + '/' + model_name + '.pth'
@@ -158,7 +175,7 @@ def main():
     cv_thread.start()
     paint_thread.start()
     
-    critereon = nn.BCELoss()
+    critereon = nn.BCELoss(reduction='none')
     optimizer = torch.optim.SGD(student.parameters(), lr=0.01, momentum=0.0)
     
     t_loop = datetime.now()
@@ -170,37 +187,64 @@ def main():
     delta_remain = 1
     # --------- 4. inference for each image ---------
 
+    teacher_mode = False
+    if teacher_mode:
+        while True:
+            data_test = student_inference_queue.get()
+            if data_test == "kill":
+                print("Pytorch thread exiting gracefully")
+                student_result_queue.put("kill")
+                exit()
+            inputs_test = data_test['image'].unsqueeze(0)
+            inputs_test = inputs_test.type(torch.FloatTensor)
+            if torch.cuda.is_available():
+                inputs_test = inputs_test.cuda()
+            td1,td2,td3,td4,td5,td6,td7= teacher(inputs_test)
+            pred = td1[:,0,:,:]
+            student_result_queue.put(pred.detach())
+            del td1,td2,td3,td4,td5,td6,td7, pred
+            # pred = normPRED(pred)
+
+    # b = 0
+    # c = 0
     while True:
         delta_remain -= 1
         data_test = student_inference_queue.get()
+        if data_test == "kill":
+            print("Pytorch thread exiting gracefully")
+            student_result_queue.put("kill")
+            exit()
         inputs_test = data_test['image'].unsqueeze(0)
         inputs_test = inputs_test.type(torch.FloatTensor)
         if torch.cuda.is_available():
             inputs_test = inputs_test.cuda()
+        # a = datetime.now()
+        # print(inputs_test)
         d1,d2,d3,d4,d5,d6,d7= student(inputs_test)
-        td1,td2,td3,td4,td5,td6,td7= teacher(inputs_test)
+        # b += (datetime.now() - a).microseconds
+        # c += 1
+        # print(b/c)
 
         # normalization
         pred = d1[:,0,:,:]
-        pred = normPRED(pred)
+        # pred = normPRED(pred)
 
         if delta_remain <= 0:
             if torch.isnan(pred).any():
                 print("WARN: PRED NAN")
-                print(pred.max())
-                print(pred.min())
+                # print(pred)
+                # print(pred.max())
+                # print(pred.min())
+                continue
             # trigger teacher learning
+            td1,td2,td3,td4,td5,td6,td7= teacher(inputs_test)
             teacher_pred = td1[:,0,:,:].detach()
-            teacher_pred = normPRED(teacher_pred)
+            # teacher_pred = normPRED(teacher_pred)
 
             loss = critereon(pred, teacher_pred)
+            loss *= ((teacher_pred * 5) + 1) / 6
+            loss = loss.mean()
             print('loss', loss.item())
-            if loss.item() != loss.item():
-                print("WARN: LOSS NAN")
-                print(pred.min())
-                print(pred.max())
-                print(teacher_pred.min())
-                print(teacher_pred.max())
             budget = U_MAX
             if loss.item() > 0.05:
                 # Acceptable loss, skip teaching
@@ -212,8 +256,10 @@ def main():
                     optimizer.step()
                     d1,d2,d3,d4,d5,d6,d7= student(inputs_test)
                     pred = d1[:,0,:,:]
-                    pred = normPRED(pred)
+                    # pred = normPRED(pred)
                     loss = critereon(pred, teacher_pred)
+                    loss *= ((teacher_pred * 6) + 1) / 6
+                    loss = loss.mean()
                     print('loss', loss.item())
                     budget -= 1
             if loss.item() <= 0.05:
@@ -222,6 +268,7 @@ def main():
             else:
                 delta = max(DELTA_MIN, delta // 2)
             delta_remain = delta
+            del td1,td2,td3,td4,td5,td6,td7, teacher_pred
         student_result_queue.put(pred.detach())
         del d1,d2,d3,d4,d5,d6,d7, pred
 
