@@ -1,7 +1,7 @@
 import glob
 import os
-import sys
 import queue
+import sys
 import threading
 from datetime import datetime
 
@@ -16,10 +16,12 @@ from PIL import Image, ImageChops
 from skimage import io, transform
 from torch.autograd import Variable
 from torchvision import transforms  # , utils
-sys.path.append(os.path.realpath('../detectron2'))
 
 # from data_loader import RescaleT, SalObjVideoIterable, ToTensorLab
-from models import *  # full size version 173.6 MB
+import models
+
+sys.path.append(os.path.realpath('../detectron2'))
+
 #from models import U2NET  # full size version 173.6 MB
 #from models import U2NETP  # small version u2net 4.7 MB
 #from models import U2NETP_short
@@ -27,28 +29,33 @@ from models import *  # full size version 173.6 MB
 
 # import torch.optim as optim
 
+# All threads should propogate quits when they receive the string
+# "quit" as an input, and emit the signal downstream
+
+# A > B
+# { in_image:   original numpy image
+#   image:      processed Torch tensor of image
+#   id:         id of associated video  }
 student_inference_queue = queue.Queue(3)
+# A > C
+# { image?:     original numpy image
+#   label?:     original numpy label
+#   id:         id of associated video  }
 orig_image_queue = queue.Queue()
+# B > C
+# pred: predicted torch tensor
 student_result_queue = queue.Queue(3)
 
-
-# normalize the predicted SOD probability map
-def normPRED(d):
-    ma = torch.max(d)
-    mi = torch.min(d)
-
-    dn = (d-mi)/max(ma-mi, 0.001)
-
-    return dn
 
 # TODO: make abstract or flagify
 img_bg = io.imread("data/example_bgs/tokyo.jpg")
 img_bg = Image.fromarray(img_bg)
 img_bg_resized = None
-# post_image = None
 
 def paint_output(image_name,pred,orig,d_dir,width=None, height=None):
-    predict = (pred > 0.5).float()
+    # predict = (pred > 0.5).float()
+    # predict = pred.squeeze().float()
+    predict = torch.clamp(pred.squeeze().float() * 2 - 0.5, 0, 1)
     predict_np = predict.cpu().data.numpy()
     del pred
   
@@ -70,7 +77,11 @@ def paint_output(image_name,pred,orig,d_dir,width=None, height=None):
 
     return out
 
-def cv2_thread_func(video_name, output_size=320, model_zoo = False):
+def davis_thread_func():
+    davis_path = "data/davis"
+    # wip davis_
+
+def cv2_thread_func(video_name, output_size=320):
     video = cv2.VideoCapture(video_name)
     images_in_flight = []
     try:
@@ -84,43 +95,37 @@ def cv2_thread_func(video_name, output_size=320, model_zoo = False):
             orig_image = image.copy()
             orig_image_queue.put(orig_image)
             
-            if model_zoo:
-                student_inference_queue.put({
-                    "in_image": image[:,:,::-1],
-                    "image": 0
-                })
-            else:
-                resized_img = Image.fromarray(image).convert('RGB')
-                resized_img = resized_img.resize((output_size,output_size),resample=Image.NEAREST)
-                resized_img = np.array(resized_img)
-                
-                image = resized_img/np.max(resized_img)
-                tmpImg = np.zeros((image.shape[0],image.shape[1],3))
-                tmpImg[:,:,0] = (image[:,:,0]-0.485)/0.229
-                tmpImg[:,:,1] = (image[:,:,1]-0.456)/0.224
-                tmpImg[:,:,2] = (image[:,:,2]-0.406)/0.225
+            
+            resized_img = Image.fromarray(image).convert('RGB')
+            resized_img = resized_img.resize((output_size,output_size),resample=Image.NEAREST)
+            resized_img = np.array(resized_img)
+            
+            image = resized_img/np.max(resized_img)
+            tmpImg = np.zeros((image.shape[0],image.shape[1],3))
+            tmpImg[:,:,0] = (image[:,:,0]-0.485)/0.229
+            tmpImg[:,:,1] = (image[:,:,1]-0.456)/0.224
+            tmpImg[:,:,2] = (image[:,:,2]-0.406)/0.225
 
-                # RGB to BRG
-                tmpImg = tmpImg.transpose((2, 0, 1))
+            # RGB to BRG
+            tmpImg = tmpImg.transpose((2, 0, 1))
 
-                student_inference_queue.put({
-                    "in_image": 0,
-                    "image": torch.from_numpy(tmpImg)
-                })
+            student_inference_queue.put({
+                "in_image": resized_img, #orig_image[:,:,::-1],
+                "image": torch.from_numpy(tmpImg)
+            })
     except:
         print("CV2 reader hard exit")
         student_inference_queue.put("kill")
         orig_image_queue.put("kill")
     exit()
 
-def paint_thread_func(show = True):
+def paint_thread_func(show = True, keep_vid = False):
     if show:
         cv2.namedWindow("im")
     vid_out = None
     # TODO: make flag for video saving params
-    keep_vid = True
     t = datetime.now()
-    print(t)
+    total_frames = 0
     while True:
         orig_image = orig_image_queue.get()
         if not vid_out and keep_vid:
@@ -129,6 +134,7 @@ def paint_thread_func(show = True):
                 # TODO: get fps from cv2 thread message
                 25, (orig_image.shape[1], orig_image.shape[0]))
         pred_mask = student_result_queue.get()
+        total_frames += 1
         if (orig_image == "kill") or (pred_mask == "kill"):
             print("Drawer exiting gracefully")
             break
@@ -136,8 +142,7 @@ def paint_thread_func(show = True):
         merged_image = paint_output("", pred_mask, orig_image, "")[:,:,::-1]
         if show:
             cv2.imshow("im", merged_image)
-        # print("time to paint:", datetime.now() - t)
-        t = datetime.now()
+        print("avg time/frame:", (datetime.now() - t) / total_frames)
         if vid_out:
             vid_out.write(merged_image)
         if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -152,8 +157,8 @@ def paint_thread_func(show = True):
 def main():
 
     # --------- 1. get image path and name ---------
-    model_zoo = False# False for u2net/p/short
-    model_name='u2net'#'u2netp'#'rcnn_101'#'mrcnn_50'#
+    model_name='mrcnn_50'#'u2net'#'u2netp'#'rcnn_101'#'mrcnn_50'#
+    model_zoo = 'u2net' not in model_name # False for u2net/p/short
 
     # TODO: make input to script
     # video_path = 0 # for local camera
@@ -162,42 +167,43 @@ def main():
     prediction_dir = './data/out/'
     model_dir = './saved_models/'+ model_name + '/' + model_name + '.pth'
     
-    video_show_online = True
+    show_video = True
+    keep_video = False
     teacher_mode = False
 
-    # --------- 2. dataloader ---------
-    # Not needed, we have a worker thread now
-    # --------- 3. model define ---------
+    # --------- 2. model define ---------
+    teacher = None
     if(model_name=='u2net'):
         print("...load U2NET---173.6 MB")
-        teacher = U2NET(3,1)
+        teacher = models.U2NET(3,1)
     elif(model_name=='u2netp'):
         print("...load U2NEP---4.7 MB")
-        teacher = U2NETP(3,1)
+        teacher = models.U2NETP(3,1)
     elif(model_zoo):
         print("...load MODEL_ZOO: "+model_name)
-        teacher = MODEL_ZOO(model_name)
+        teacher = models.MODEL_ZOO(model_name)
 
-
-    student = JITNET(3, 1)
+    student = models.U2NETP_short(3, 1) # U2NETP_short # JITNET
     if not model_zoo:
         if torch.cuda.is_available():
             teacher.load_state_dict(torch.load(model_dir))
             teacher.cuda()
-            student.cuda()
         else:
             teacher.load_state_dict(torch.load(model_dir,map_location=torch.device('cpu')))
         teacher.eval()
-        # student.eval()
+    if torch.cuda.is_available():
+        student.cuda()
+    # student.eval()
 
-    cv_thread = threading.Thread(target=cv2_thread_func, args=(
-        video_path, 320, model_zoo
+    # --------- 3. threads setup ---------
+    producer = threading.Thread(target=cv2_thread_func, args=(
+        video_path, 320
     ))
-    paint_thread = threading.Thread(target=paint_thread_func, args=(
-        video_show_online,
+    reducer = threading.Thread(target=paint_thread_func, args=(
+        show_video, keep_video
     ))
-    cv_thread.start()
-    paint_thread.start()
+    producer.start()
+    reducer.start()
     
     critereon = nn.BCELoss(reduction='none')
     optimizer = torch.optim.SGD(student.parameters(), lr=0.01, momentum=0.0)
@@ -207,9 +213,10 @@ def main():
     U_MAX = 8
     DELTA_MIN = 8
     DELTA_MAX = 64
+    LOSS_THRESH = 0.01
     delta = DELTA_MIN
     delta_remain = 1
-    cnt = 0
+    # cnt = 0
     # --------- 4. inference for each image ---------
 
     a = datetime.now()
@@ -227,17 +234,15 @@ def main():
                 data_test = data_test.type(torch.FloatTensor)
                 if torch.cuda.is_available():
                     data_test = data_test.cuda()
-            print(data_test.shape)
             td1,td2,td3,td4,td5,td6,td7= teacher(data_test)
             pred = td1.squeeze(0).squeeze(0)
             student_result_queue.put(pred.detach())
             del td1,td2,td3,td4,td5,td6,td7, pred
-            cnt+=1
-            if cnt == 100:
-                cnt = 0
-                print('time', datetime.now() - a)
-                a = datetime.now()
-            # pred = normPRED(pred)
+            # cnt+=1
+            # if cnt == 100:
+            #     cnt = 0
+            #     print('time/100 frames', datetime.now() - a)
+            #     a = datetime.now()
 
     # b = 0
     # c = 0
@@ -262,7 +267,6 @@ def main():
     
             # normalization
             pred = d1[:,0,:,:]
-            # pred = normPRED(pred)
             if delta_remain <= 0:
                 if torch.isnan(pred).any():
                     print("WARN: PRED NAN")
@@ -271,24 +275,29 @@ def main():
                     # print(pred.min())
                     continue
                 # trigger teacher learning
-                td1,td2,td3,td4,td5,td6,td7= teacher(inputs_test)
-                teacher_pred = td1[:,0,:,:].detach()
-                # teacher_pred = normPRED(teacher_pred)
+                teach_inputs_test = inputs_test
+                if model_zoo:
+                    teach_inputs_test = data_test['in_image'].copy()
+                td1,td2,td3,td4,td5,td6,td7= teacher(teach_inputs_test)
+                if model_zoo:
+                    teacher_pred = td1.detach().squeeze(0).squeeze(0).float()
+                else:
+                    teacher_pred = td1[:,0,:,:].detach()
 
                 loss = critereon(pred, teacher_pred)
                 loss *= ((teacher_pred * 5) + 1) / 6
                 loss = loss.mean()
                 budget = U_MAX
-                cnt+=1
-                if cnt == 10:
-                    cnt = 0
-                    print('loss', loss.item())
-                    print('time', datetime.now() - a)
-                    a = datetime.now()
+                # cnt+=1
+                # if cnt == 10:
+                #     cnt = 0
+                #     print('loss', loss.item())
+                #     print('time', datetime.now() - a)
+                #     a = datetime.now()
                         
-                if loss.item() > 0.05:
+                if loss.item() > LOSS_THRESH:
                     # Acceptable loss, skip teaching
-                    while loss.item() > 0.05 and budget > 0:
+                    while loss.item() > LOSS_THRESH and budget > 0:
                         if loss > 0.5:
                             loss /= torch.norm(loss.detach())
                         optimizer.zero_grad()
@@ -296,12 +305,11 @@ def main():
                         optimizer.step()
                         d1,d2,d3,d4,d5,d6,d7= student(inputs_test)
                         pred = d1[:,0,:,:]
-                        # pred = normPRED(pred)
                         loss = critereon(pred, teacher_pred)
                         loss *= ((teacher_pred * 6) + 1) / 6
                         loss = loss.mean()
                         budget -= 1
-                if loss.item() <= 0.05:
+                if loss.item() <= LOSS_THRESH:
                     # Loss still bad after training, decrease delay
                     delta = min(DELTA_MAX, 2 * delta)
                 else:

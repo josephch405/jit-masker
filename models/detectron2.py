@@ -2,6 +2,7 @@
 # Some basic setup:
 # Setup detectron2 logger
 import detectron2
+from detectron2 import model_zoo
 try:
     from detectron2.utils.logger import setup_logger
 except ImportError:
