@@ -3,6 +3,7 @@ import glob
 import math
 import random
 from datetime import datetime
+import os
 
 import cv2
 import matplotlib.pyplot as plt
@@ -323,3 +324,9 @@ class SalObjVideoIterable(IterableDataset):
 		if self.transform:
 			sample = self.transform(sample)
 		return {**sample, 'orig_image': image.copy()}
+
+class DavidDataloader(Dataset):
+	def __init__(self, root_path="data/davis"):
+		self.root_path = root_path
+		self.anno_path = os.path.join(root_path, "Annotations/480p")
+		self.anno_path = os.path.join(root_path, "")
