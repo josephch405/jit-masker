@@ -557,7 +557,7 @@ class U2NETP(nn.Module):
 
 class U2NETP_short(nn.Module):
 
-    def __init__(self,in_ch=3,out_ch=1):
+    def __init__(self,in_ch=3,out_ch=1,levels=6):
         super(U2NETP_short,self).__init__()
 
         self.stage1 = PLN(in_ch,16,64)
@@ -597,7 +597,8 @@ class U2NETP_short(nn.Module):
         self.upscore3 = nn.Upsample(scale_factor=4,mode='bilinear')
         self.upscore2 = nn.Upsample(scale_factor=2, mode='bilinear')
 
-        self.outconv = nn.Conv2d(6,1,1)
+        self.outconv = nn.Conv2d(levels,1,1)
+        self.levels = levels
 
     def forward(self,x):
 
@@ -621,15 +622,19 @@ class U2NETP_short(nn.Module):
 
         #stage 5
         hx5 = self.stage5(hx)
-        hx = self.pool56(hx5)
 
-        #stage 6
-        hx6 = self.stage6(hx)
-        hx6up = self.upscore2(hx6)
+        if self.levels >= 6:
+            hx = self.pool56(hx5)
 
-        #decoder
-        hx5d = self.stage5d(torch.cat((hx6up,hx5),1))
-        hx5dup = self.upscore2(hx5d)
+            #stage 6
+            hx6 = self.stage6(hx)
+            hx6up = self.upscore2(hx6)
+
+            # decoder
+            hx5d = self.stage5d(torch.cat((hx6up,hx5),1))
+            hx5dup = self.upscore2(hx5d)
+        else:
+            hx5dup = self.upscore2(hx5)
 
         hx4d = self.stage4d(torch.cat((hx5dup,hx4),1))
         hx4dup = self.upscore2(hx4d)
@@ -655,13 +660,16 @@ class U2NETP_short(nn.Module):
         d4 = self.side4(hx4d)
         d4 = self.upscore4(d4)
 
-        d5 = self.side5(hx5d)
+        d5 = self.side5(hx5)
         d5 = self.upscore5(d5)
 
-        d6 = self.side6(hx6)
-        d6 = self.upscore6(d6)
+        if self.levels == 6:
+            d6 = self.side6(hx6)
+            d6 = self.upscore6(d6)
+            d0 = self.outconv(torch.cat((d1,d2,d3,d4,d5,d6),1))
+            return F.sigmoid(d0), F.sigmoid(d1), F.sigmoid(d2), F.sigmoid(d3), F.sigmoid(d4), F.sigmoid(d5), F.sigmoid(d6)
 
-        d0 = self.outconv(torch.cat((d1,d2,d3,d4,d5,d6),1))
+        d0 = self.outconv(torch.cat((d1,d2,d3,d4,d5),1))
         # d00 = d0 + self.refconv(d0)
 
-        return F.sigmoid(d0), F.sigmoid(d1), F.sigmoid(d2), F.sigmoid(d3), F.sigmoid(d4), F.sigmoid(d5), F.sigmoid(d6)
+        return F.sigmoid(d0), F.sigmoid(d1), F.sigmoid(d2), F.sigmoid(d3), F.sigmoid(d4), F.sigmoid(d5), None
