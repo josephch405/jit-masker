@@ -199,16 +199,28 @@ def paint_thread_func(show=True, keep_video_at=""):
     exit()
 
 
-def score_thread_func():
+def score_thread_func(groundtruth, allclasses):
     scores = []
     # cv2.namedWindow("scorer debug")
     while True:
         orig_image = orig_image_queue.get()
         if orig_image == "kill":
             break
-        orig_label_np = orig_image['label']
-        if len(orig_label_np.shape) == 3:
-            orig_label_np = orig_label_np[:, :, 0]
+        if groundtruth=='label':
+            orig_label_np = orig_image['label']
+            if len(orig_label_np.shape) == 3:
+                orig_label_np = orig_label_np[:, :, 0]
+        else:
+            orig_image_np = orig_image['image']
+            data_test = np_img_resize(orig_image_np)
+            model = models.MODEL_ZOO(groundtruth, allclasses)
+            td1, td2, td3, td4, td5, td6, td7 = model(data_test)
+            mask = td1.squeeze(0).squeeze(0).detach().float()
+            mask = ((mask > 0.5).bool().cpu().numpy() * 255).astype(np.uint8)
+            mask = np_img_resize(mask, orig_image_np.shape[1], orig_image_np.shape[0]) > 128
+            mask = (mask[:, :, 0] * 255).astype(np.uint8)
+            orig_label_np = mask
+            del td1, td2, td3, td4, td5, td6, td7
         pred_mask = student_result_queue.get()
         # total_frames += 1
         if pred_mask == "kill":
@@ -225,7 +237,7 @@ def score_thread_func():
         else:
             score = intersection.sum() / union.sum()
         scores.append(score)
-    print(sum(scores) / len(scores))
+        print(sum(scores) / len(scores))
 
 
 
@@ -242,13 +254,19 @@ def main():
                         help='whether to show live feed of inference')
     parser.add_argument('--teacher_mode', '-tm', action='store_true',
                         help='skip student, infer with teacher')
+    parser.add_argument('--groundtruth', default='label',
+                        help='use label | rcnn_101 | mrcnn_50 prediction as groud truth')
     parser.add_argument(
         '--output', '-o', help='path to output saved video; none by default')
+    parser.add_argument(
+        '--input', '-i', default='./data/example_videos/easy/0001.mp4', help='path to input video')
     parser.add_argument(
         '--davis', action='store_true', help='run on the DAVIS dataset'
     )
     parser.add_argument('--score', '-s', action='store_true',
         help='score the model on precomputed targets; always headless')
+    parser.add_argument('--allclasses', action='store_true',
+        help='include all classes instead of only people segmentation')
 
     args = parser.parse_args()
 
@@ -258,12 +276,10 @@ def main():
 
     # TODO: make input to script
     # video_path = 0 # for local camera
-    video_path = './data/example_videos/easy/0001.mp4'
+    # video_path = args.input
     # video_path = "http://10.1.10.17:8080/video" # IP camera
     prediction_dir = './data/out/'
     model_dir = './saved_models/' + model_name + '/' + model_name + '.pth'
-
-    teacher_mode = False
 
     # --------- 2. model define ---------
     teacher = None
@@ -275,7 +291,7 @@ def main():
         teacher = models.U2NETP(3, 1)
     elif(model_zoo):
         print("...load MODEL_ZOO: "+model_name)
-        teacher = models.MODEL_ZOO(model_name)
+        teacher = models.MODEL_ZOO(model_name, args.allclasses)
 
     student = models.JITNET(3, 1)  # U2NETP_short # JITNET
     if not model_zoo:
@@ -295,10 +311,13 @@ def main():
         producer = threading.Thread(target=davis_thread_func)
     else:
         producer = threading.Thread(target=cv2_thread_func, args=[
-            video_path
+            args.input
         ])
     if args.score:
-        reducer = threading.Thread(target=score_thread_func)
+        reducer = threading.Thread(target=score_thread_func, args=(
+            args.groundtruth,
+            args.allclasses
+        ))
     else:
         reducer = threading.Thread(target=paint_thread_func, args=(
             not args.headless, args.output
