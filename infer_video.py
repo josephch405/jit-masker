@@ -17,6 +17,7 @@ from PIL import Image, ImageChops
 from skimage import io, transform
 from torch.autograd import Variable
 from torchvision import transforms  # , utils
+from tqdm import tqdm
 
 # from data_loader import RescaleT, SalObjVideoIterable, ToTensorLab
 import models
@@ -92,10 +93,10 @@ def np_img_to_torch(np_img):
     return torch.from_numpy(tmpImg)
 
 
-def np_img_resize(np_img, output_size = 320):
+def np_img_resize(np_img, width=320, height=320):
     resized_img = Image.fromarray(np_img).convert('RGB')
     resized_img = resized_img.resize(
-        (output_size, output_size), resample=Image.NEAREST)
+        (width, height), resample=Image.NEAREST)
     return np.array(resized_img)
 
 
@@ -106,14 +107,15 @@ def davis_thread_func():
                    for txt in ['train.txt']]
     for f in davis_files:
         imageset_file = open(f, 'r')
-        for line in imageset_file.readlines():
+        for line in tqdm(imageset_file.readlines()):
             im_anno_pair = line.split(" ")
             vid_id = os.path.dirname(im_anno_pair[0])
             im = io.imread(os.path.join(davis_path, im_anno_pair[0][1:]))
             anno = io.imread(os.path.join(davis_path, im_anno_pair[1][1:]))
             orig_image_queue.put({
                 'image': im,
-                'id': vid_id
+                'id': vid_id,
+                'label': anno,
             })
 
             resized_img = np_img_resize(im)
@@ -122,6 +124,8 @@ def davis_thread_func():
                 "np_image": resized_img,
                 "image": tensor
             })
+        orig_image_queue.put("kill")
+        student_inference_queue.put("kill")
 
 
 def cv2_thread_func(video_name):
@@ -195,6 +199,36 @@ def paint_thread_func(show=True, keep_video_at=""):
     exit()
 
 
+def score_thread_func():
+    scores = []
+    # cv2.namedWindow("scorer debug")
+    while True:
+        orig_image = orig_image_queue.get()
+        if orig_image == "kill":
+            break
+        orig_label_np = orig_image['label']
+        if len(orig_label_np.shape) == 3:
+            orig_label_np = orig_label_np[:, :, 0]
+        pred_mask = student_result_queue.get()
+        # total_frames += 1
+        if pred_mask == "kill":
+            break
+        pred_mask = ((pred_mask > 0.5).bool().cpu().numpy() * 255).astype(np.uint8)
+        pred_mask = np_img_resize(pred_mask, orig_label_np.shape[1], orig_label_np.shape[0]) > 128
+        pred_mask = (pred_mask[:, :, 0] * 255).astype(np.uint8)
+
+        union = pred_mask | orig_label_np
+        intersection = pred_mask & orig_label_np
+        
+        if union.sum() == 0:
+            score = 1
+        else:
+            score = intersection.sum() / union.sum()
+        scores.append(score)
+    print(sum(scores) / len(scores))
+
+
+
 def main():
 
     parser = argparse.ArgumentParser(
@@ -204,7 +238,7 @@ def main():
                         help='name of teacher model: u2net | u2netp | rcnn_101 | mrcnn_50')
     parser.add_argument('--student', '-m', default='jitnet',
                         help='name of student model: u2netp | u2netps | jitnet [not yet impl]')
-    parser.add_argument('--show_video', '-s', default=True,
+    parser.add_argument('--headless', '-hl', action='store_true',
                         help='whether to show live feed of inference')
     parser.add_argument('--teacher_mode', '-tm', action='store_true',
                         help='skip student, infer with teacher')
@@ -213,6 +247,8 @@ def main():
     parser.add_argument(
         '--davis', action='store_true', help='run on the DAVIS dataset'
     )
+    parser.add_argument('--score', '-s', action='store_true',
+        help='score the model on precomputed targets; always headless')
 
     args = parser.parse_args()
 
@@ -222,8 +258,8 @@ def main():
 
     # TODO: make input to script
     # video_path = 0 # for local camera
-    # video_path = './data/example_videos/zoom.mp4'
-    video_path = "http://10.1.10.17:8080/video" # IP camera
+    video_path = './data/example_videos/easy/0001.mp4'
+    # video_path = "http://10.1.10.17:8080/video" # IP camera
     prediction_dir = './data/out/'
     model_dir = './saved_models/' + model_name + '/' + model_name + '.pth'
 
@@ -241,7 +277,7 @@ def main():
         print("...load MODEL_ZOO: "+model_name)
         teacher = models.MODEL_ZOO(model_name)
 
-    student = models.U2NETP_short(3, 1)  # U2NETP_short # JITNET
+    student = models.JITNET(3, 1)  # U2NETP_short # JITNET
     if not model_zoo:
         if torch.cuda.is_available():
             teacher.load_state_dict(torch.load(model_dir))
@@ -261,9 +297,12 @@ def main():
         producer = threading.Thread(target=cv2_thread_func, args=[
             video_path
         ])
-    reducer = threading.Thread(target=paint_thread_func, args=(
-        args.show_video, args.output
-    ))
+    if args.score:
+        reducer = threading.Thread(target=score_thread_func)
+    else:
+        reducer = threading.Thread(target=paint_thread_func, args=(
+            not args.headless, args.output
+        ))
     producer.start()
     reducer.start()
 
