@@ -2,9 +2,8 @@
 # Some basic setup:
 # Setup detectron2 logger
 import detectron2
-from detectron2 import model_zoo
 try:
-    from detectron2.utils.logger import setup_logger
+    from detectron2 import model_zoo
 except ImportError:
     pass
 
@@ -42,9 +41,10 @@ mrcnn_50 = "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"
 rcnn_101 = "COCO-InstanceSegmentation/mask_rcnn_X_101_32x8d_FPN_3x.yaml"
 
 class MODEL_ZOO():
-    def __init__(self,model_name = "mrcnn_50"):
+    def __init__(self,model_name = "mrcnn_50", allclasses = False):
         setup_logger()
         self.cfg = get_cfg()
+        self.allclasses = allclasses
         # add project-specific config (e.g., TensorMask) here if you're not runn        ing a model in detectron2's core library
         if model_name == "mrcnn_50":
             config = mrcnn_50
@@ -59,6 +59,12 @@ class MODEL_ZOO():
     def __call__(self, im):
         outputs = self.predictor(im)
         pred = outputs["instances"]
-        result = pred.pred_masks[pred.pred_classes == 0,:,:].any(dim=0) > 0 
+        if self.allclasses:
+            if pred.pred_masks.shape[0] == 0:
+                result = pred.pred_masks.any(dim=0) > 0
+            else:
+                result = pred.pred_masks[0,:,:]
+        else:
+            result = pred.pred_masks[pred.pred_classes == 0,:,:].any(dim=0) > 0
         return result,0,0,0,0,0,0
     
