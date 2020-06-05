@@ -22,8 +22,6 @@ from tqdm import tqdm
 # from data_loader import RescaleT, SalObjVideoIterable, ToTensorLab
 import models
 
-sys.path.append(os.path.realpath('../detectron2'))
-
 # from models import U2NET  # full size version 173.6 MB
 # from models import U2NETP  # small version u2net 4.7 MB
 #from models import U2NETP_short
@@ -57,12 +55,11 @@ img_bg_resized = None
 
 def paint_output(image_name, pred, orig, d_dir, width=None, height=None):
     # predict = (pred > 0.5).float()
-    # predict = pred.squeeze().float()
-    predict = torch.clamp(pred.squeeze().float() * 2 - 0.5, 0, 1)
-    predict_np = predict.cpu().data.numpy()
+    predict = pred.squeeze().float()
+    predict = predict.cpu().data.numpy()
     del pred
 
-    im = Image.fromarray(predict_np*255).convert('RGB')
+    im = Image.fromarray(predict*255).convert('RGB')
     img_name = image_name.split("/")[-1]
 
     orig_image_arr = orig
@@ -96,7 +93,7 @@ def np_img_to_torch(np_img):
 def np_img_resize(np_img, width=320, height=320):
     resized_img = Image.fromarray(np_img).convert('RGB')
     resized_img = resized_img.resize(
-        (width, height), resample=Image.NEAREST)
+        (width, height), resample=Image.BILINEAR)
     return np.array(resized_img)
 
 
@@ -109,7 +106,7 @@ def davis_thread_func():
         imageset_file = open(f, 'r')
         for line in tqdm(imageset_file.readlines()):
             im_anno_pair = line.split(" ")
-            vid_id = os.path.dirname(im_anno_pair[0])
+            vid_id = os.path.join(davis_path, im_anno_pair[0][1:])
             im = io.imread(os.path.join(davis_path, im_anno_pair[0][1:]))
             anno = io.imread(os.path.join(davis_path, im_anno_pair[1][1:]))
             orig_image_queue.put({
@@ -124,9 +121,35 @@ def davis_thread_func():
                 "np_image": resized_img,
                 "image": tensor
             })
-        orig_image_queue.put("kill")
-        student_inference_queue.put("kill")
+    orig_image_queue.put("kill")
+    student_inference_queue.put("kill")
 
+def people_thread_func():
+    data_path = "data/Supervisely Person Dataset"
+    # todo: add other text files
+    
+    dirpath = [os.path.join(data_path,d,'masks_human') for d in os.listdir(data_path) if os.path.isdir(os.path.join(data_path,d))]
+    for d in dirpath:
+        files = [f for f in os.listdir(d) if os.path.isfile(os.path.join(d,f))]
+        for f in files:
+            vid_id = os.path.join(d, f)
+            image = io.imread(vid_id)
+            im = image[:,:int(image.shape[1]/2),:]
+            anno = image[:,int(image.shape[1]/2):,:]
+            anno = 255*(np.sum((anno[:,:,::-1]-im[:,:,::-1]),axis=2)>0)
+            orig_image_queue.put({
+                'image': im,
+                'id': vid_id,
+                'label': anno,
+            })
+            resized_img = np_img_resize(im)
+            tensor = np_img_to_torch(resized_img)
+            student_inference_queue.put({
+                "np_image": resized_img,
+                "image": tensor
+            })
+    orig_image_queue.put("kill")
+    student_inference_queue.put("kill")
 
 def cv2_thread_func(video_name):
     video = cv2.VideoCapture(video_name)
@@ -181,7 +204,6 @@ def paint_thread_func(show=True, keep_video_at=""):
         total_frames += 1
         if pred_mask == "kill":
             break
-        pred_mask = torch.clamp(pred_mask * 3 - 2, 0, 1)
         merged_image = paint_output(
             "", pred_mask, orig_image_np, "")[:, :, ::-1]
         if show:
@@ -201,6 +223,8 @@ def paint_thread_func(show=True, keep_video_at=""):
 
 def score_thread_func(groundtruth, all_classes):
     scores = []
+    scores_clamped = []
+    cnt = 0
     # cv2.namedWindow("scorer debug")
     while True:
         orig_image = orig_image_queue.get()
@@ -214,7 +238,7 @@ def score_thread_func(groundtruth, all_classes):
             orig_image_np = orig_image['image']
             data_test = np_img_resize(orig_image_np)
             model = models.MODEL_ZOO(groundtruth, all_classes)
-            td1, td2, td3, td4, td5, td6, td7 = model(data_test)
+            td1, td2, td3, td4, td5, td6, td7 = model(data_test[:,:,::-1])
             mask = td1.squeeze(0).squeeze(0).detach().float()
             mask = ((mask > 0.5).bool().cpu().numpy() * 255).astype(np.uint8)
             mask = np_img_resize(mask, orig_image_np.shape[1], orig_image_np.shape[0]) > 128
@@ -236,9 +260,17 @@ def score_thread_func(groundtruth, all_classes):
             score = 1
         else:
             score = intersection.sum() / union.sum()
+        if score < 0.1:
+            cnt += 1
+            print(score)
+            print(cnt)
+            id = orig_image["id"].split('/')
+            print(id[-2] +'_' + id[-1])
+        else:
+            scores_clamped.append(score)
         scores.append(score)
-        print(sum(scores) / len(scores))
-
+        print('scores: ' + str(sum(scores) / len(scores)))
+    print('scores_clamped: ' + str(sum(scores_clamped) / len(scores_clamped)))
 
 
 def main():
@@ -257,11 +289,14 @@ def main():
     parser.add_argument('--groundtruth', default='label',
                         help='use label | rcnn_101 | mrcnn_50 prediction as groud truth')
     parser.add_argument(
-        '--output', '-o', help='path to output saved video; none by default')
+        '--output', '-o', default = './data/out/jitnet.mp4', help='path to output saved video; none by default')
     parser.add_argument(
-        '--input', '-i', default='./data/example_videos/easy/0001.mp4', help='path to input video')
+        '--input', '-i', default='./data/example_videos/easy/0001.mp4', help='path to input video, 0 for local camera, http://10.1.10.17:8080/video" for IP camera, and dir for video input')
     parser.add_argument(
-        '--davis', action='store_true', help='run on the DAVIS dataset'
+        '--dataset', default='video', help='run on the video | davis | people dataset'
+    )
+    parser.add_argument(
+        '--hardedge', action='store_true', help='predict image with hard edge (no transparency)'
     )
     parser.add_argument('--score', '-s', action='store_true',
         help='score the model on precomputed targets; always headless')
@@ -278,10 +313,10 @@ def main():
     # video_path = 0 # for local camera
     # video_path = args.input
     # video_path = "http://10.1.10.17:8080/video" # IP camera
-    prediction_dir = './data/out/'
     model_dir = './saved_models/' + model_name + '/' + model_name + '.pth'
 
     # --------- 2. model define ---------
+    # Load Teacher
     teacher = None
     if(model_name == 'u2net'):
         print("...load U2NET---173.6 MB")
@@ -292,8 +327,24 @@ def main():
     elif(model_zoo):
         print("...load MODEL_ZOO: "+model_name)
         teacher = models.MODEL_ZOO(model_name, args.all_classes)
-
-    student = models.JITNET(3, 1)  # U2NETP_short # JITNET
+        
+    # Load Student
+    if(args.student == 'jitnet'):
+        print("...studnet load JITNET")
+        student = models.JITNET(3, 1)
+    elif(args.student == 'u2net'):
+        print("...studnet load U2NET")
+        student = models.U2NET(3, 1)
+    elif(args.student == 'u2netp'):
+        print("...studnet load U2NETP")
+        student = models.U2NETP(3, 1)
+    elif(args.student == 'u2netp_short'):
+        print("...studnet load U2NETP_short")
+        student = models.U2NETP_short(3, 1)
+    elif(args.student == 'jitnet_side'):
+        print("...studnet load JITNET_SIDE")
+        student = models.JITNET_SIDE(3, 1)
+        
     if not model_zoo:
         if torch.cuda.is_available():
             teacher.load_state_dict(torch.load(model_dir))
@@ -307,9 +358,11 @@ def main():
     # student.eval()
 
     # --------- 3. threads setup ---------
-    if args.davis:
+    if args.dataset == 'davis':
         producer = threading.Thread(target=davis_thread_func)
-    else:
+    elif args.dataset == 'people':
+        producer = threading.Thread(target=people_thread_func)
+    elif args.dataset == 'video':
         producer = threading.Thread(target=cv2_thread_func, args=[
             args.input
         ])
@@ -342,15 +395,19 @@ def main():
     def teacher_infer(data_test):
         if model_zoo:
             data_test = data_test['np_image']
+            data_test = data_test[:,:,::-1]
         else:
             data_test = data_test['image'].unsqueeze(0)
             data_test = data_test.type(torch.FloatTensor)
             if torch.cuda.is_available():
                 data_test = data_test.cuda()
         td1, td2, td3, td4, td5, td6, td7 = teacher(data_test)
-        pred = td1.squeeze(0).squeeze(0)
+        pred = td1.squeeze(0).squeeze(0).detach().float()
+        #pred = torch.clamp(pred * 2 - 1, 0, 1)
+        if args.hardedge:
+            pred = (pred > 0.5).bool().float()
         del td1, td2, td3, td4, td5, td6, td7
-        return pred.detach().float()
+        return pred
 
     a = datetime.now()
     if args.teacher_mode:
@@ -363,12 +420,6 @@ def main():
             pred = teacher_infer(data_test)
             student_result_queue.put(pred)
             del pred
-            # cnt+=1
-            # if cnt == 100:
-            #     cnt = 0
-            #     print('time/100 frames', datetime.now() - a)
-            #     a = datetime.now()
-
     # b = 0
     # c = 0
     else:
@@ -434,7 +485,11 @@ def main():
                     delta = max(DELTA_MIN, delta // 2)
                 delta_remain = delta
                 del teacher_pred
-            student_result_queue.put(pred.squeeze(0).detach())
+            pred = pred.squeeze(0).detach()
+            #pred = torch.clamp(pred * 2 - 1, 0, 1)
+            if args.hardedge:
+                pred = (pred > 0.5).bool().float()
+            student_result_queue.put(pred)
             del d1, d2, d3, d4, d5, d6, d7, pred
 
 
