@@ -1,22 +1,16 @@
 # data loader
+from __future__ import print_function, division
 import glob
-import math
-import random
-from datetime import datetime
-import os
-
-import cv2
-import matplotlib.pyplot as plt
-import numpy as np
 import torch
-import torchvision
-from PIL import Image
-from skimage import color, io, transform
-from torch.utils.data import DataLoader, Dataset, IterableDataset
+from skimage import io, transform, color
+import numpy as np
+import random
+import math
+import matplotlib.pyplot as plt
+from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
+from PIL import Image
 
-
-# cv2.setNumThreads(0)
 #==========================dataset load==========================
 class RescaleT(object):
 
@@ -25,7 +19,6 @@ class RescaleT(object):
 		self.output_size = output_size
 
 	def __call__(self,sample):
-		t = datetime.now()
 		imidx, image, label = sample['imidx'], sample['image'],sample['label']
 
 		h, w = image.shape[:2]
@@ -39,19 +32,13 @@ class RescaleT(object):
 			new_h, new_w = self.output_size
 
 		new_h, new_w = int(new_h), int(new_w)
-		print("pre resize", datetime.now() - t)
 
 		# #resize the image to new_h x new_w and convert image from range [0,255] to [0,1]
 		# img = transform.resize(image,(new_h,new_w),mode='constant')
 		# lbl = transform.resize(label,(new_h,new_w),mode='constant', order=0, preserve_range=True)
 
 		img = transform.resize(image,(self.output_size,self.output_size),mode='constant')
-		print("resize", datetime.now() - t)
-
-		if label:
-			lbl = transform.resize(label,(self.output_size,self.output_size),mode='constant', order=0, preserve_range=True)
-		else:
-			lbl = label
+		lbl = transform.resize(label,(self.output_size,self.output_size),mode='constant', order=0, preserve_range=True)
 
 		return {'imidx':imidx, 'image':img,'label':lbl}
 
@@ -63,6 +50,10 @@ class Rescale(object):
 
 	def __call__(self,sample):
 		imidx, image, label = sample['imidx'], sample['image'],sample['label']
+
+		if random.random() >= 0.5:
+			image = image[::-1]
+			label = label[::-1]
 
 		h, w = image.shape[:2]
 
@@ -93,6 +84,10 @@ class RandomCrop(object):
 			self.output_size = output_size
 	def __call__(self,sample):
 		imidx, image, label = sample['imidx'], sample['image'], sample['label']
+
+		if random.random() >= 0.5:
+			image = image[::-1]
+			label = label[::-1]
 
 		h, w = image.shape[:2]
 		new_h, new_w = self.output_size
@@ -148,19 +143,12 @@ class ToTensorLab(object):
 
 		imidx, image, label =sample['imidx'], sample['image'], sample['label']
 
-		if label:
-			tmpLbl = np.zeros(label.shape)
+		tmpLbl = np.zeros(label.shape)
 
-			if(np.max(label)<1e-6):
-				label = label
-			else:
-				label = label/np.max(label)
-
-			tmpLbl[:,:,0] = label[:,:,0]
-			tmpLbl = label.transpose((2, 0, 1))
-			tmpLbl = torch.from_numpy(tmpLbl)
+		if(np.max(label)<1e-6):
+			label = label
 		else:
-			tmpLbl = label
+			label = label/np.max(label)
 
 		# change the color space
 		if self.flag == 2: # with rgb and Lab colors
@@ -217,23 +205,22 @@ class ToTensorLab(object):
 			tmpImg = np.zeros((image.shape[0],image.shape[1],3))
 			image = image/np.max(image)
 			if image.shape[2]==1:
-				# rgb
 				tmpImg[:,:,0] = (image[:,:,0]-0.485)/0.229
 				tmpImg[:,:,1] = (image[:,:,0]-0.485)/0.229
 				tmpImg[:,:,2] = (image[:,:,0]-0.485)/0.229
 			else:
-				# white
 				tmpImg[:,:,0] = (image[:,:,0]-0.485)/0.229
 				tmpImg[:,:,1] = (image[:,:,1]-0.456)/0.224
 				tmpImg[:,:,2] = (image[:,:,2]-0.406)/0.225
-			# return {'imidx':torch.from_numpy(imidx), 'image': torch.from_numpy(tmpImg), 'label': torch.from_numpy(tmpLbl)}
 
+		tmpLbl[:,:,0] = label[:,:,0]
 
 		# change the r,g,b to b,r,g from [0,255] to [0,1]
 		#transforms.Normalize(mean = (0.485, 0.456, 0.406), std = (0.229, 0.224, 0.225))
 		tmpImg = tmpImg.transpose((2, 0, 1))
+		tmpLbl = label.transpose((2, 0, 1))
 
-		return {'imidx':torch.from_numpy(imidx), 'image': torch.from_numpy(tmpImg), 'label': tmpLbl}
+		return {'imidx':torch.from_numpy(imidx), 'image': torch.from_numpy(tmpImg), 'label': torch.from_numpy(tmpLbl)}
 
 class SalObjDataset(Dataset):
 	def __init__(self,img_name_list,lbl_name_list,transform=None):
@@ -279,54 +266,3 @@ class SalObjDataset(Dataset):
 			sample = self.transform(sample)
 
 		return sample
-
-# TODO: This flow straight up is broken as cv2 videos do not play nice with
-# NB: for now, only represents a single video. Indices index into the frames
-class SalObjVideoIterable(IterableDataset):
-	def __init__(self,video_name,output_size=320,lbl_name=None,transform=None):
-		# NB: video_name can be a camera IP
-		# Video label not supported yet
-		self.video_name = video_name
-		# self.label_name = lbl_name
-		self.transform = transform
-		self.imgidx = 0
-		self.video = cv2.VideoCapture(video_name)
-		self.output_size = 320
-
-	def __len__(self):
-		return int(self.video.get(cv2.CAP_PROP_FRAME_COUNT))
-
-	def __iter__(self):
-		return self
-
-	def __next__(self):
-
-		# image = Image.open(self.image_name_list[idx])#io.imread(self.image_name_list[idx])
-		# label = Image.open(self.label_name_list[idx])#io.imread(self.label_name_list[idx])
-
-		# vidname = self.video_name_list[idx]
-		imgidx = np.array([self.imgidx])
-		self.imgidx += 1
-		succ, image = self.video.read()
-		if not succ:
-			raise StopIteration
-
-		label = 0
-
-		image = image[:,:,::-1]
-		# print(image.shape)
-
-		resized_img = Image.fromarray(image).convert('RGB')
-		resized_img = resized_img.resize((self.output_size,self.output_size),resample=Image.BILINEAR)
-
-		sample = {'imidx':imgidx, 'image':np.array(resized_img), 'label':label}
-
-		if self.transform:
-			sample = self.transform(sample)
-		return {**sample, 'orig_image': image.copy()}
-
-class DavidDataloader(Dataset):
-	def __init__(self, root_path="data/davis"):
-		self.root_path = root_path
-		self.anno_path = os.path.join(root_path, "Annotations/480p")
-		self.anno_path = os.path.join(root_path, "")

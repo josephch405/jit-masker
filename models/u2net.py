@@ -18,21 +18,13 @@ class REBNCONV(nn.Module):
 
         return xout
 
-class PLN(nn.Module):#UNet07DRES(nn.Module):
+## upsample tensor 'src' to have the same spatial size with tensor 'tar'
+def _upsample_like(src,tar):
 
-    def __init__(self, in_ch=3, mid_ch=12, out_ch=3):
-        super(PLN,self).__init__()
+    src = F.upsample(src,size=tar.shape[2:],mode='bilinear')
 
-        self.rebnconvin = REBNCONV(in_ch,mid_ch,dirate=1)
-        self.rebnconvout = REBNCONV(mid_ch,out_ch,dirate=1)
+    return src
 
-    def forward(self,x):
-
-        hx = x
-        hxin = self.rebnconvin(hx)
-        hxout = self.rebnconvout(hxin)
-
-        return hxout
 
 ### RSU-7 ###
 class RSU7(nn.Module):#UNet07DRES(nn.Module):
@@ -68,8 +60,6 @@ class RSU7(nn.Module):#UNet07DRES(nn.Module):
         self.rebnconv2d = REBNCONV(mid_ch*2,mid_ch,dirate=1)
         self.rebnconv1d = REBNCONV(mid_ch*2,out_ch,dirate=1)
 
-        self.upscore2 = nn.Upsample(scale_factor=2, mode='bilinear')
-
     def forward(self,x):
 
         hx = x
@@ -95,18 +85,19 @@ class RSU7(nn.Module):#UNet07DRES(nn.Module):
         hx7 = self.rebnconv7(hx6)
 
         hx6d =  self.rebnconv6d(torch.cat((hx7,hx6),1))
-        hx6up = self.upscore2(hx6d)
-        hx5d =  self.rebnconv5d(torch.cat((hx6up,hx5),1))
-        hx5dup = self.upscore2(hx5d)
+        hx6dup = _upsample_like(hx6d,hx5)
+
+        hx5d =  self.rebnconv5d(torch.cat((hx6dup,hx5),1))
+        hx5dup = _upsample_like(hx5d,hx4)
 
         hx4d = self.rebnconv4d(torch.cat((hx5dup,hx4),1))
-        hx4dup = self.upscore2(hx4d)
+        hx4dup = _upsample_like(hx4d,hx3)
 
         hx3d = self.rebnconv3d(torch.cat((hx4dup,hx3),1))
-        hx3dup = self.upscore2(hx3d)
+        hx3dup = _upsample_like(hx3d,hx2)
 
         hx2d = self.rebnconv2d(torch.cat((hx3dup,hx2),1))
-        hx2dup = self.upscore2(hx2d)
+        hx2dup = _upsample_like(hx2d,hx1)
 
         hx1d = self.rebnconv1d(torch.cat((hx2dup,hx1),1))
 
@@ -142,8 +133,6 @@ class RSU6(nn.Module):#UNet06DRES(nn.Module):
         self.rebnconv2d = REBNCONV(mid_ch*2,mid_ch,dirate=1)
         self.rebnconv1d = REBNCONV(mid_ch*2,out_ch,dirate=1)
 
-        self.upscore2 = nn.Upsample(scale_factor=2, mode='bilinear')
-
     def forward(self,x):
 
         hx = x
@@ -168,16 +157,16 @@ class RSU6(nn.Module):#UNet06DRES(nn.Module):
 
 
         hx5d =  self.rebnconv5d(torch.cat((hx6,hx5),1))
-        hx5dup = self.upscore2(hx5d)
+        hx5dup = _upsample_like(hx5d,hx4)
 
         hx4d = self.rebnconv4d(torch.cat((hx5dup,hx4),1))
-        hx4dup = self.upscore2(hx4d)
+        hx4dup = _upsample_like(hx4d,hx3)
 
         hx3d = self.rebnconv3d(torch.cat((hx4dup,hx3),1))
-        hx3dup = self.upscore2(hx3d)
+        hx3dup = _upsample_like(hx3d,hx2)
 
         hx2d = self.rebnconv2d(torch.cat((hx3dup,hx2),1))
-        hx2dup = self.upscore2(hx2d)
+        hx2dup = _upsample_like(hx2d,hx1)
 
         hx1d = self.rebnconv1d(torch.cat((hx2dup,hx1),1))
 
@@ -209,8 +198,6 @@ class RSU5(nn.Module):#UNet05DRES(nn.Module):
         self.rebnconv2d = REBNCONV(mid_ch*2,mid_ch,dirate=1)
         self.rebnconv1d = REBNCONV(mid_ch*2,out_ch,dirate=1)
 
-        self.upscore2 = nn.Upsample(scale_factor=2, mode='bilinear')
-
     def forward(self,x):
 
         hx = x
@@ -231,13 +218,13 @@ class RSU5(nn.Module):#UNet05DRES(nn.Module):
         hx5 = self.rebnconv5(hx4)
 
         hx4d = self.rebnconv4d(torch.cat((hx5,hx4),1))
-        hx4dup = self.upscore2(hx4d)
+        hx4dup = _upsample_like(hx4d,hx3)
 
         hx3d = self.rebnconv3d(torch.cat((hx4dup,hx3),1))
-        hx3dup = self.upscore2(hx3d)
+        hx3dup = _upsample_like(hx3d,hx2)
 
         hx2d = self.rebnconv2d(torch.cat((hx3dup,hx2),1))
-        hx2dup = self.upscore2(hx2d)
+        hx2dup = _upsample_like(hx2d,hx1)
 
         hx1d = self.rebnconv1d(torch.cat((hx2dup,hx1),1))
 
@@ -265,8 +252,6 @@ class RSU4(nn.Module):#UNet04DRES(nn.Module):
         self.rebnconv2d = REBNCONV(mid_ch*2,mid_ch,dirate=1)
         self.rebnconv1d = REBNCONV(mid_ch*2,out_ch,dirate=1)
 
-        self.upscore2 = nn.Upsample(scale_factor=2, mode='bilinear')
-
     def forward(self,x):
 
         hx = x
@@ -284,10 +269,10 @@ class RSU4(nn.Module):#UNet04DRES(nn.Module):
         hx4 = self.rebnconv4(hx3)
 
         hx3d = self.rebnconv3d(torch.cat((hx4,hx3),1))
-        hx3dup = self.upscore2(hx3d)
+        hx3dup = _upsample_like(hx3d,hx2)
 
         hx2d = self.rebnconv2d(torch.cat((hx3dup,hx2),1))
-        hx2dup = self.upscore2(hx2d)
+        hx2dup = _upsample_like(hx2d,hx1)
 
         hx1d = self.rebnconv1d(torch.cat((hx2dup,hx1),1))
 
@@ -360,20 +345,14 @@ class U2NET(nn.Module):
         self.stage2d = RSU6(256,32,64)
         self.stage1d = RSU7(128,16,64)
 
-        self.side1 = nn.Conv2d(64,1,3,padding=1)
-        self.side2 = nn.Conv2d(64,1,3,padding=1)
-        self.side3 = nn.Conv2d(128,1,3,padding=1)
-        self.side4 = nn.Conv2d(256,1,3,padding=1)
-        self.side5 = nn.Conv2d(512,1,3,padding=1)
-        self.side6 = nn.Conv2d(512,1,3,padding=1)
+        self.side1 = nn.Conv2d(64,out_ch,3,padding=1)
+        self.side2 = nn.Conv2d(64,out_ch,3,padding=1)
+        self.side3 = nn.Conv2d(128,out_ch,3,padding=1)
+        self.side4 = nn.Conv2d(256,out_ch,3,padding=1)
+        self.side5 = nn.Conv2d(512,out_ch,3,padding=1)
+        self.side6 = nn.Conv2d(512,out_ch,3,padding=1)
 
-        self.upscore6 = nn.Upsample(scale_factor=32,mode='bilinear')
-        self.upscore5 = nn.Upsample(scale_factor=16,mode='bilinear')
-        self.upscore4 = nn.Upsample(scale_factor=8,mode='bilinear')
-        self.upscore3 = nn.Upsample(scale_factor=4,mode='bilinear')
-        self.upscore2 = nn.Upsample(scale_factor=2, mode='bilinear')
-
-        self.outconv = nn.Conv2d(6,1,1)
+        self.outconv = nn.Conv2d(6,out_ch,1)
 
     def forward(self,x):
 
@@ -386,8 +365,6 @@ class U2NET(nn.Module):
         #stage 2
         hx2 = self.stage2(hx)
         hx = self.pool23(hx2)
-
-
 
         #stage 3
         hx3 = self.stage3(hx)
@@ -403,20 +380,20 @@ class U2NET(nn.Module):
 
         #stage 6
         hx6 = self.stage6(hx)
-        hx6up = self.upscore2(hx6)
+        hx6up = _upsample_like(hx6,hx5)
 
         #-------------------- decoder --------------------
         hx5d = self.stage5d(torch.cat((hx6up,hx5),1))
-        hx5dup = self.upscore2(hx5d)
+        hx5dup = _upsample_like(hx5d,hx4)
 
         hx4d = self.stage4d(torch.cat((hx5dup,hx4),1))
-        hx4dup = self.upscore2(hx4d)
+        hx4dup = _upsample_like(hx4d,hx3)
 
         hx3d = self.stage3d(torch.cat((hx4dup,hx3),1))
-        hx3dup = self.upscore2(hx3d)
+        hx3dup = _upsample_like(hx3d,hx2)
 
         hx2d = self.stage2d(torch.cat((hx3dup,hx2),1))
-        hx2dup = self.upscore2(hx2d)
+        hx2dup = _upsample_like(hx2d,hx1)
 
         hx1d = self.stage1d(torch.cat((hx2dup,hx1),1))
 
@@ -425,19 +402,19 @@ class U2NET(nn.Module):
         d1 = self.side1(hx1d)
 
         d2 = self.side2(hx2d)
-        d2 = self.upscore2(d2)
+        d2 = _upsample_like(d2,d1)
 
         d3 = self.side3(hx3d)
-        d3 = self.upscore3(d3)
+        d3 = _upsample_like(d3,d1)
 
         d4 = self.side4(hx4d)
-        d4 = self.upscore4(d4)
+        d4 = _upsample_like(d4,d1)
 
         d5 = self.side5(hx5d)
-        d5 = self.upscore5(d5)
+        d5 = _upsample_like(d5,d1)
 
         d6 = self.side6(hx6)
-        d6 = self.upscore6(d6)
+        d6 = _upsample_like(d6,d1)
 
         d0 = self.outconv(torch.cat((d1,d2,d3,d4,d5,d6),1))
 
@@ -473,20 +450,14 @@ class U2NETP(nn.Module):
         self.stage2d = RSU6(128,16,64)
         self.stage1d = RSU7(128,16,64)
 
-        self.side1 = nn.Conv2d(64,1,3,padding=1)
-        self.side2 = nn.Conv2d(64,1,3,padding=1)
-        self.side3 = nn.Conv2d(64,1,3,padding=1)
-        self.side4 = nn.Conv2d(64,1,3,padding=1)
-        self.side5 = nn.Conv2d(64,1,3,padding=1)
-        self.side6 = nn.Conv2d(64,1,3,padding=1)
+        self.side1 = nn.Conv2d(64,out_ch,3,padding=1)
+        self.side2 = nn.Conv2d(64,out_ch,3,padding=1)
+        self.side3 = nn.Conv2d(64,out_ch,3,padding=1)
+        self.side4 = nn.Conv2d(64,out_ch,3,padding=1)
+        self.side5 = nn.Conv2d(64,out_ch,3,padding=1)
+        self.side6 = nn.Conv2d(64,out_ch,3,padding=1)
 
-        self.upscore6 = nn.Upsample(scale_factor=32,mode='bilinear')
-        self.upscore5 = nn.Upsample(scale_factor=16,mode='bilinear')
-        self.upscore4 = nn.Upsample(scale_factor=8,mode='bilinear')
-        self.upscore3 = nn.Upsample(scale_factor=4,mode='bilinear')
-        self.upscore2 = nn.Upsample(scale_factor=2, mode='bilinear')
-
-        self.outconv = nn.Conv2d(6,1,1)
+        self.outconv = nn.Conv2d(6,out_ch,1)
 
     def forward(self,x):
 
@@ -514,20 +485,20 @@ class U2NETP(nn.Module):
 
         #stage 6
         hx6 = self.stage6(hx)
-        hx6up = self.upscore2(hx6)
+        hx6up = _upsample_like(hx6,hx5)
 
         #decoder
         hx5d = self.stage5d(torch.cat((hx6up,hx5),1))
-        hx5dup = self.upscore2(hx5d)
+        hx5dup = _upsample_like(hx5d,hx4)
 
         hx4d = self.stage4d(torch.cat((hx5dup,hx4),1))
-        hx4dup = self.upscore2(hx4d)
+        hx4dup = _upsample_like(hx4d,hx3)
 
         hx3d = self.stage3d(torch.cat((hx4dup,hx3),1))
-        hx3dup = self.upscore2(hx3d)
+        hx3dup = _upsample_like(hx3d,hx2)
 
         hx2d = self.stage2d(torch.cat((hx3dup,hx2),1))
-        hx2dup = self.upscore2(hx2d)
+        hx2dup = _upsample_like(hx2d,hx1)
 
         hx1d = self.stage1d(torch.cat((hx2dup,hx1),1))
 
@@ -536,22 +507,21 @@ class U2NETP(nn.Module):
         d1 = self.side1(hx1d)
 
         d2 = self.side2(hx2d)
-        d2 = self.upscore2(d2)
+        d2 = _upsample_like(d2,d1)
 
         d3 = self.side3(hx3d)
-        d3 = self.upscore3(d3)
+        d3 = _upsample_like(d3,d1)
 
         d4 = self.side4(hx4d)
-        d4 = self.upscore4(d4)
+        d4 = _upsample_like(d4,d1)
 
         d5 = self.side5(hx5d)
-        d5 = self.upscore5(d5)
+        d5 = _upsample_like(d5,d1)
 
         d6 = self.side6(hx6)
-        d6 = self.upscore6(d6)
+        d6 = _upsample_like(d6,d1)
 
         d0 = self.outconv(torch.cat((d1,d2,d3,d4,d5,d6),1))
-        # d00 = d0 + self.refconv(d0)
 
         return F.sigmoid(d0), F.sigmoid(d1), F.sigmoid(d2), F.sigmoid(d3), F.sigmoid(d4), F.sigmoid(d5), F.sigmoid(d6)
 

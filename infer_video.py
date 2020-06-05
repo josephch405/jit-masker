@@ -199,7 +199,7 @@ def paint_thread_func(show=True, keep_video_at=""):
     exit()
 
 
-def score_thread_func(groundtruth, allclasses):
+def score_thread_func(groundtruth, all_classes):
     scores = []
     # cv2.namedWindow("scorer debug")
     while True:
@@ -213,7 +213,7 @@ def score_thread_func(groundtruth, allclasses):
         else:
             orig_image_np = orig_image['image']
             data_test = np_img_resize(orig_image_np)
-            model = models.MODEL_ZOO(groundtruth, allclasses)
+            model = models.MODEL_ZOO(groundtruth, all_classes)
             td1, td2, td3, td4, td5, td6, td7 = model(data_test)
             mask = td1.squeeze(0).squeeze(0).detach().float()
             mask = ((mask > 0.5).bool().cpu().numpy() * 255).astype(np.uint8)
@@ -265,7 +265,7 @@ def main():
     )
     parser.add_argument('--score', '-s', action='store_true',
         help='score the model on precomputed targets; always headless')
-    parser.add_argument('--allclasses', action='store_true',
+    parser.add_argument('--all_classes', action='store_true',
         help='include all classes instead of only people segmentation')
 
     args = parser.parse_args()
@@ -291,7 +291,7 @@ def main():
         teacher = models.U2NETP(3, 1)
     elif(model_zoo):
         print("...load MODEL_ZOO: "+model_name)
-        teacher = models.MODEL_ZOO(model_name, args.allclasses)
+        teacher = models.MODEL_ZOO(model_name, args.all_classes)
 
     student = models.JITNET(3, 1)  # U2NETP_short # JITNET
     if not model_zoo:
@@ -316,7 +316,7 @@ def main():
     if args.score:
         reducer = threading.Thread(target=score_thread_func, args=(
             args.groundtruth,
-            args.allclasses
+            args.all_classes
         ))
     else:
         reducer = threading.Thread(target=paint_thread_func, args=(
