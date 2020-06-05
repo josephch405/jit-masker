@@ -11,6 +11,7 @@ except ImportError:
 import numpy as np
 import cv2
 import random
+import torch
 # import some common detectron2 utilities
 try:
     from detectron2.utils.logger import setup_logger
@@ -63,7 +64,7 @@ class MODEL_ZOO():
             if pred.pred_masks.shape[0] == 0:
                 result = pred.pred_masks.any(dim=0) > 0
             else:
-                result = pred.pred_masks[0,:,:]
+                result = pred.pred_masks[torch.argmax(pred.pred_boxes.area()*(pred.scores>0.5)),:,:]
         else:
             result = pred.pred_masks[pred.pred_classes == 0,:,:].any(dim=0) > 0
         return result,0,0,0,0,0,0
