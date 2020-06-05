@@ -56,6 +56,7 @@ img_bg_resized = None
 def paint_output(image_name, pred, orig, d_dir, width=None, height=None):
     # predict = (pred > 0.5).float()
     predict = pred.squeeze().float()
+    predict = torch.clamp(predict * 2 - 1, 0, 1)
     predict = predict.cpu().data.numpy()
     del pred
 
@@ -306,28 +307,31 @@ def main():
     args = parser.parse_args()
 
     # --------- 1. get image path and name ---------
-    model_name = args.teacher  # 'u2net'#'u2netp'#'rcnn_101'#'mrcnn_50'#
-    model_zoo = 'u2net' not in model_name  # False for u2net/p/short
+    teacher_model_name = args.teacher  # 'u2net'#'u2netp'#'rcnn_101'#'mrcnn_50'#
+    model_zoo = 'u2net' not in teacher_model_name  # False for u2net/p/short
+
+    student_model_name = args.student  # 'u2net'#'u2netp'#'jitnet'#
 
     # TODO: make input to script
     # video_path = 0 # for local camera
     # video_path = args.input
     # video_path = "http://10.1.10.17:8080/video" # IP camera
-    model_dir = './saved_models/' + model_name + '/' + model_name + '.pth'
+    teacher_model_dir = './saved_models/' + teacher_model_name + '/' + teacher_model_name + '.pth'
+    student_model_dir = './saved_models/' + student_model_name + '/' + student_model_name + '.pth'
 
     # --------- 2. model define ---------
     # Load Teacher
     teacher = None
-    if(model_name == 'u2net'):
+    if(teacher_model_name == 'u2net'):
         print("...load U2NET---173.6 MB")
         teacher = models.U2NET(3, 1)
-    elif(model_name == 'u2netp'):
+    elif(teacher_model_name == 'u2netp'):
         print("...load U2NEP---4.7 MB")
         teacher = models.U2NETP(3, 1)
     elif(model_zoo):
-        print("...load MODEL_ZOO: "+model_name)
-        teacher = models.MODEL_ZOO(model_name, args.all_classes)
-        
+        print("...load MODEL_ZOO: "+teacher_model_dir)
+        teacher = models.MODEL_ZOO(teacher_model_name, args.all_classes)
+
     # Load Student
     if(args.student == 'jitnet'):
         print("...studnet load JITNET")
@@ -345,14 +349,22 @@ def main():
         print("...studnet load JITNET_SIDE")
         student = models.JITNET_SIDE(3, 1)
         
+    # Load teacher
     if not model_zoo:
         if torch.cuda.is_available():
-            teacher.load_state_dict(torch.load(model_dir))
+            teacher.load_state_dict(torch.load(teacher_model_dir))
             teacher.cuda()
         else:
             teacher.load_state_dict(torch.load(
-                model_dir, map_location=torch.device('cpu')))
+                teacher_model_dir, map_location=torch.device('cpu')))
         teacher.eval()
+    # Load student
+    if student in ["jitnet", "u2net", "u2netp"]:
+        if torch.cuda.is_available():
+            student.load_state_dict(torch.load(student_model_dir))
+        else:
+            student.load_state_dict(torch.load(
+                student_model_dir, map_location=torch.device('cpu')))
     if torch.cuda.is_available():
         student.cuda()
     # student.eval()

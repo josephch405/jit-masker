@@ -525,6 +525,22 @@ class U2NETP(nn.Module):
 
         return F.sigmoid(d0), F.sigmoid(d1), F.sigmoid(d2), F.sigmoid(d3), F.sigmoid(d4), F.sigmoid(d5), F.sigmoid(d6)
 
+class PLN(nn.Module):#UNet07DRES(nn.Module):
+
+    def __init__(self, in_ch=3, mid_ch=12, out_ch=3):
+        super(PLN,self).__init__()
+
+        self.rebnconvin = REBNCONV(in_ch,mid_ch,dirate=1)
+        self.rebnconvout = REBNCONV(mid_ch,out_ch,dirate=1)
+
+    def forward(self,x):
+
+        hx = x
+        hxin = self.rebnconvin(hx)
+        hxout = self.rebnconvout(hxin)
+
+        return hxout
+
 class U2NETP_short(nn.Module):
 
     def __init__(self,in_ch=3,out_ch=1,levels=6):
