@@ -226,6 +226,9 @@ def score_thread_func(groundtruth, all_classes):
     scores = []
     scores_clamped = []
     cnt = 0
+    model = None
+    if groundtruth != "label":
+        model = models.MODEL_ZOO(groundtruth, all_classes)
     # cv2.namedWindow("scorer debug")
     while True:
         orig_image = orig_image_queue.get()
@@ -238,7 +241,6 @@ def score_thread_func(groundtruth, all_classes):
         else:
             orig_image_np = orig_image['image']
             data_test = np_img_resize(orig_image_np)
-            model = models.MODEL_ZOO(groundtruth, all_classes)
             td1, td2, td3, td4, td5, td6, td7 = model(data_test[:,:,::-1])
             mask = td1.squeeze(0).squeeze(0).detach().float()
             mask = ((mask > 0.5).bool().cpu().numpy() * 255).astype(np.uint8)
@@ -359,7 +361,7 @@ def main():
                 teacher_model_dir, map_location=torch.device('cpu')))
         teacher.eval()
     # Load student
-    if student in ["jitnet", "u2net", "u2netp"]:
+    if args.student in ["jitnet", "u2net", "u2netp"]:
         if torch.cuda.is_available():
             student.load_state_dict(torch.load(student_model_dir))
         else:
@@ -398,7 +400,7 @@ def main():
     U_MAX = 8
     DELTA_MIN = 8
     DELTA_MAX = 64
-    LOSS_THRESH = 0.05
+    LOSS_THRESH = 0.001
     delta = DELTA_MIN
     delta_remain = 1
     # cnt = 0

@@ -48,11 +48,11 @@ def muti_bce_loss_fusion(d0, d1, d2, d3, d4, d5, d6, labels_v):
 model_name = 'jitnet' #'u2netp'
 
 data_dir = './data/'
-tra_image_dir = 'portrait/img_crop/'
-tra_label_dir = 'portrait/img_crop/'
+tra_image_dir = 'supervisely/'
+# tra_label_dir = 'portrait/img_crop/'
 
-image_ext = '.jpg'
-label_ext = '.jpg'
+image_ext = '.png'
+label_ext = '.png'
 
 model_dir = './saved_models/' + model_name +'/'
 
@@ -62,19 +62,21 @@ batch_size_val = 1
 train_num = 0
 val_num = 0
 
-tra_img_name_list = glob.glob(data_dir + tra_image_dir + '*' + image_ext)
+print(data_dir + tra_image_dir + '**/img/*' + image_ext)
 
-tra_lbl_name_list = []
-for img_path in tra_img_name_list:
-  img_name = img_path.split("/")[-1]
+tra_img_name_list = glob.glob(data_dir + tra_image_dir + '**/img/*' + image_ext)
 
-  aaa = img_name.split(".")
-  bbb = aaa[0:-1]
-  imidx = bbb[0]
-  for i in range(1,len(bbb)):
-    imidx = imidx + "." + bbb[i]
+tra_lbl_name_list = [ img_path.replace('img', 'masks_machine') for img_path in tra_img_name_list]
+# for img_path in tra_img_name_list:
+  # img_name = img_path.split("/")[-1]
 
-  tra_lbl_name_list.append(data_dir + tra_label_dir + imidx + label_ext)
+  # aaa = img_name.split(".")
+  # bbb = aaa[0:-1]
+  # imidx = bbb[0]
+  # for i in range(1,len(bbb)):
+  #   imidx = imidx + "." + bbb[i]
+
+  # tra_lbl_name_list.append(data_dir + tra_label_dir + imidx + label_ext)
 
 print("---")
 print("train images: ", len(tra_img_name_list))
@@ -90,7 +92,7 @@ salobj_dataset = SalObjDataset(
         RescaleT(320),
         RandomCrop(288),
         ToTensorLab(flag=0)]))
-salobj_dataloader = DataLoader(salobj_dataset, batch_size=batch_size_train, shuffle=True, num_workers=1)
+salobj_dataloader = DataLoader(salobj_dataset, batch_size=batch_size_train, shuffle=True, num_workers=8)
 
 # ------- 3. define model --------
 # define the net
