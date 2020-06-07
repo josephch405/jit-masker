@@ -36,16 +36,20 @@ import models
 {   np_image:   original numpy image
     image:      processed Torch tensor of image
     id:         id of associated video  }   '''
-student_inference_queue = queue.Queue(3)
+student_inference_queue = queue.Queue(1)
 ''' A > C
-{   image:     original numpy image
+{   image:      original numpy image
     label?:     original numpy label
     id:         id of associated video  }   '''
 orig_image_queue = queue.Queue()
 ''' B > C
     pred: predicted torch tensor'''
-student_result_queue = queue.Queue(3)
-
+student_result_queue = queue.Queue(1)
+''' B > D
+{   image:      original torch tensor
+    np_image:   original numpy image
+    id:         id of associated video  }   '''
+teacher_matching_queue = queue.Queue(8)
 
 # TODO: make abstract or flagify
 img_bg = io.imread("data/example_bgs/tokyo.jpg")
@@ -56,7 +60,7 @@ img_bg_resized = None
 def paint_output(image_name, pred, orig, d_dir, width=None, height=None):
     # predict = (pred > 0.5).float()
     predict = pred.squeeze().float()
-    predict = torch.clamp(predict * 2 - 1, 0, 1)
+    predict = torch.clamp(predict * 4 - 2, 0, 1)
     predict = predict.cpu().data.numpy()
     del pred
 
@@ -125,19 +129,22 @@ def davis_thread_func():
     orig_image_queue.put("kill")
     student_inference_queue.put("kill")
 
+
 def people_thread_func():
     data_path = "data/Supervisely Person Dataset"
     # todo: add other text files
-    
-    dirpath = [os.path.join(data_path,d,'masks_human') for d in os.listdir(data_path) if os.path.isdir(os.path.join(data_path,d))]
+
+    dirpath = [os.path.join(data_path, d, 'masks_human') for d in os.listdir(
+        data_path) if os.path.isdir(os.path.join(data_path, d))]
     for d in dirpath:
-        files = [f for f in os.listdir(d) if os.path.isfile(os.path.join(d,f))]
+        files = [f for f in os.listdir(
+            d) if os.path.isfile(os.path.join(d, f))]
         for f in files:
             vid_id = os.path.join(d, f)
             image = io.imread(vid_id)
-            im = image[:,:int(image.shape[1]/2),:]
-            anno = image[:,int(image.shape[1]/2):,:]
-            anno = 255*(np.sum((anno[:,:,::-1]-im[:,:,::-1]),axis=2)>0)
+            im = image[:, :int(image.shape[1]/2), :]
+            anno = image[:, int(image.shape[1]/2):, :]
+            anno = 255*(np.sum((anno[:, :, ::-1]-im[:, :, ::-1]), axis=2) > 0)
             orig_image_queue.put({
                 'image': im,
                 'id': vid_id,
@@ -152,12 +159,14 @@ def people_thread_func():
     orig_image_queue.put("kill")
     student_inference_queue.put("kill")
 
+
 def cv2_thread_func(video_name):
     video = cv2.VideoCapture(video_name)
-    images_in_flight = []
+    i = 0
     try:
         while True:
             succ, image = video.read()
+            i += 1
             # image = cv2.resize(image,
             #     (image.shape[1] * 320 // image.shape[0], 320),
             #     interpolation=cv2.INTER_AREA)
@@ -176,7 +185,9 @@ def cv2_thread_func(video_name):
                 "np_image": resized_img,  # orig_image[:,:,::-1],
                 "image": tensor
             })
-    except:
+    except Exception as e:
+        print(i)
+        print(e)
         print("CV2 reader hard exit")
         student_inference_queue.put("kill")
         orig_image_queue.put("kill")
@@ -225,7 +236,6 @@ def paint_thread_func(show=True, keep_video_at=""):
 def score_thread_func(groundtruth, all_classes):
     scores = []
     scores_clamped = []
-    cnt = 0
     model = None
     if groundtruth != "label":
         model = models.MODEL_ZOO(groundtruth, all_classes)
@@ -234,17 +244,18 @@ def score_thread_func(groundtruth, all_classes):
         orig_image = orig_image_queue.get()
         if orig_image == "kill":
             break
-        if groundtruth=='label':
+        if groundtruth == 'label':
             orig_label_np = orig_image['label']
             if len(orig_label_np.shape) == 3:
                 orig_label_np = orig_label_np[:, :, 0]
         else:
             orig_image_np = orig_image['image']
             data_test = np_img_resize(orig_image_np)
-            td1, td2, td3, td4, td5, td6, td7 = model(data_test[:,:,::-1])
+            td1, td2, td3, td4, td5, td6, td7 = model(data_test[:, :, ::-1])
             mask = td1.squeeze(0).squeeze(0).detach().float()
             mask = ((mask > 0.5).bool().cpu().numpy() * 255).astype(np.uint8)
-            mask = np_img_resize(mask, orig_image_np.shape[1], orig_image_np.shape[0]) > 128
+            mask = np_img_resize(
+                mask, orig_image_np.shape[1], orig_image_np.shape[0]) > 128
             mask = (mask[:, :, 0] * 255).astype(np.uint8)
             orig_label_np = mask
             del td1, td2, td3, td4, td5, td6, td7
@@ -252,28 +263,176 @@ def score_thread_func(groundtruth, all_classes):
         # total_frames += 1
         if pred_mask == "kill":
             break
-        pred_mask = ((pred_mask > 0.5).bool().cpu().numpy() * 255).astype(np.uint8)
-        pred_mask = np_img_resize(pred_mask, orig_label_np.shape[1], orig_label_np.shape[0]) > 128
+        pred_mask = ((pred_mask > 0.5).bool().cpu().numpy()
+                     * 255).astype(np.uint8)
+        pred_mask = np_img_resize(
+            pred_mask, orig_label_np.shape[1], orig_label_np.shape[0]) > 128
         pred_mask = (pred_mask[:, :, 0] * 255).astype(np.uint8)
 
         union = pred_mask | orig_label_np
         intersection = pred_mask & orig_label_np
-        
+
         if union.sum() == 0:
             score = 1
         else:
             score = intersection.sum() / union.sum()
         if score < 0.1:
-            cnt += 1
-            print(score)
-            print(cnt)
-            id = orig_image["id"].split('/')
-            print(id[-2] +'_' + id[-1])
+            # cnt += 1
+            # print(score)
+            1  # TODO: figure out good metric for empty labels
+            # print(cnt)
+            # id = orig_image["id"].split('/')
+            # print(id[-2] +'_' + id[-1])
         else:
             scores_clamped.append(score)
         scores.append(score)
         print('scores: ' + str(sum(scores) / len(scores)))
     print('scores_clamped: ' + str(sum(scores_clamped) / len(scores_clamped)))
+    exit()
+
+
+def iou_acc_torch(label, pred):
+    label = label.detach() > 0.5
+    pred = pred.detach() > 0.5
+    label_mean = label.sum().item() / label.numel()
+    if label_mean < 0.05:
+        return 0 if pred.sum().item() > 0 else 1
+        # return 1 - pred.sum().item() / pred.numel()
+    else:
+        intersection = label & pred
+        union = label | pred
+        return intersection.sum().item() / union.sum().item()
+
+def teacher_matching_func(
+        student,
+        teacher_model_name,
+        cuda,
+        teacher_mode,
+        all_classes=False):
+    frame_until_teach = 0
+    U_MAX = 8
+    DELTA_MIN = 8
+    DELTA_MAX = 64
+    ACC_THRESH = 0.9
+    delta = DELTA_MIN
+    delta_remain = 1
+    teacher = None
+
+    # teacher_model_name in [u2net, u2netp, rcnn_101, mrcnn_50]
+    teacher_model_dir = './saved_models/' + \
+        teacher_model_name + '/' + teacher_model_name + '.pth'
+
+    model_zoo = 'u2net' not in teacher_model_name  # False for u2net/p/short
+
+    if(teacher_model_name == 'u2net'):
+        print("...load U2NET---173.6 MB")
+        teacher = models.U2NET(3, 1)
+    elif(teacher_model_name == 'u2netp'):
+        print("...load U2NEP---4.7 MB")
+        teacher = models.U2NETP(3, 1)
+    elif(model_zoo):
+        print("...load MODEL_ZOO: "+teacher_model_dir)
+        teacher = models.MODEL_ZOO(teacher_model_name, all_classes)
+    # Load teacher
+    if not model_zoo:
+        if cuda:
+            teacher.load_state_dict(torch.load(teacher_model_dir))
+            teacher.cuda()
+        else:
+            teacher.load_state_dict(torch.load(
+                teacher_model_dir, map_location=torch.device('cpu')))
+        teacher.eval()
+
+    critereon = nn.BCELoss(reduction='none')
+    optimizer = torch.optim.SGD(student.parameters(), lr=0.04, momentum=0.0)
+
+    def teacher_infer(data_test):
+        if model_zoo:
+            data_test = data_test['np_image']
+            data_test = data_test[:, :, ::-1]
+        else:
+            data_test = data_test['image'].unsqueeze(0)
+            data_test = data_test.type(torch.FloatTensor)
+            if cuda:
+                data_test = data_test.cuda()
+        td1, td2, td3, td4, td5, td6, td7 = teacher(data_test)
+        pred = td1.squeeze(0).squeeze(0).detach().float()
+        #pred = torch.clamp(pred * 2 - 1, 0, 1)
+        # if args.hardedge:
+        #     pred = (pred > 0.5).bool().float()
+        del td1, td2, td3, td4, td5, td6, td7
+        return pred
+
+    if teacher_mode:
+        while True:
+            data_test = teacher_matching_queue.get()
+            if data_test == "kill":
+                print("Pytorch thread exiting gracefully")
+                student_result_queue.put("kill")
+                exit()
+            pred = teacher_infer(data_test)
+            student_result_queue.put(pred)
+            del pred
+
+    else:
+        while True:
+            delta_remain -= 1
+            data_test = teacher_matching_queue.get()
+            if data_test == "kill":
+                print("Teacher thread exiting gracefully")
+                exit()
+
+            # Run training if delta triggered
+            # print(delta_remain)
+            if delta_remain <= 0:
+                inputs_test = data_test['image'].unsqueeze(0)
+                inputs_test = inputs_test.type(torch.FloatTensor)
+                if cuda:
+                    inputs_test = inputs_test.cuda()
+                d1, d2, d3, d4, d5, d6, d7 = student(inputs_test)
+                pred = d1[:, 0, :, :]
+                if torch.isnan(pred).any():
+                    print("WARN: PRED NAN")
+                    continue
+                # trigger teacher learning
+                teacher_pred = teacher_infer(data_test)
+                if not cuda:
+                    teacher_pred = teacher_pred.cpu()
+
+                budget = U_MAX
+
+                acc = iou_acc_torch(teacher_pred, pred)
+
+                # Loss too high, teach
+                while acc < ACC_THRESH and budget > 0:
+                    # if loss > 0.5:
+                    #     loss /= torch.norm(loss.detach())
+                    loss = critereon(pred, teacher_pred)
+                    # loss *= ((teacher_pred * 5) + 1) / 6
+                    loss = loss.mean()
+                    a = datetime.now()
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+                    a = datetime.now()
+                    d1, d2, d3, d4, d5, d6, d7 = student(inputs_test)
+                    pred = d1[:, 0, :, :]
+                    acc = iou_acc_torch(teacher_pred, pred)
+                    budget -= 1
+                # print('budget remain')
+                # print(budget)
+                # print(acc)
+                if acc < ACC_THRESH:
+                    # Loss still bad after training, decrease delay
+                    delta = min(DELTA_MAX, 2 * delta)
+                else:
+                    delta = max(DELTA_MIN, delta // 2)
+                delta_remain = delta
+                del teacher_pred
+                del d1, d2, d3, d4, d5, d6, d7, pred
+            # pred = pred.squeeze(0).detach()
+            #pred = torch.clamp(pred * 2 - 1, 0, 1)
+            # student_result_queue.put(pred)
 
 
 def main():
@@ -292,47 +451,32 @@ def main():
     parser.add_argument('--groundtruth', default='label',
                         help='use label | rcnn_101 | mrcnn_50 prediction as groud truth')
     parser.add_argument(
-        '--output', '-o', default = './data/out/jitnet.mp4', help='path to output saved video; none by default')
+        '--output', '-o', default='./data/out/jitnet.mp4', help='path to output saved video; none by default')
     parser.add_argument(
         '--input', '-i', default='./data/example_videos/easy/0001.mp4', help='path to input video, 0 for local camera, http://10.1.10.17:8080/video" for IP camera, and dir for video input')
     parser.add_argument(
         '--dataset', default='video', help='run on the video | davis | people dataset'
     )
     parser.add_argument(
-        '--hardedge', action='store_true', help='predict image with hard edge (no transparency)'
+        '--hardedge', action='store_true', help='student predicts image with hard edge (no transparency)'
     )
     parser.add_argument('--score', '-s', action='store_true',
-        help='score the model on precomputed targets; always headless')
+                        help='score the model on precomputed targets; always headless')
     parser.add_argument('--all_classes', action='store_true',
-        help='include all classes instead of only people segmentation')
+                        help='include all classes instead of only people segmentation')
 
     args = parser.parse_args()
 
-    # --------- 1. get image path and name ---------
-    teacher_model_name = args.teacher  # 'u2net'#'u2netp'#'rcnn_101'#'mrcnn_50'#
-    model_zoo = 'u2net' not in teacher_model_name  # False for u2net/p/short
-
     student_model_name = args.student  # 'u2net'#'u2netp'#'jitnet'#
 
-    # TODO: make input to script
     # video_path = 0 # for local camera
     # video_path = args.input
     # video_path = "http://10.1.10.17:8080/video" # IP camera
-    teacher_model_dir = './saved_models/' + teacher_model_name + '/' + teacher_model_name + '.pth'
-    student_model_dir = './saved_models/' + student_model_name + '/' + student_model_name + '.pth'
+    student_model_dir = './saved_models/' + \
+        student_model_name + '/' + student_model_name + '.pth'
 
     # --------- 2. model define ---------
     # Load Teacher
-    teacher = None
-    if(teacher_model_name == 'u2net'):
-        print("...load U2NET---173.6 MB")
-        teacher = models.U2NET(3, 1)
-    elif(teacher_model_name == 'u2netp'):
-        print("...load U2NEP---4.7 MB")
-        teacher = models.U2NETP(3, 1)
-    elif(model_zoo):
-        print("...load MODEL_ZOO: "+teacher_model_dir)
-        teacher = models.MODEL_ZOO(teacher_model_name, args.all_classes)
 
     # Load Student
     if(args.student == 'jitnet'):
@@ -350,25 +494,22 @@ def main():
     elif(args.student == 'jitnet_side'):
         print("...studnet load JITNET_SIDE")
         student = models.JITNET_SIDE(3, 1)
-        
-    # Load teacher
-    if not model_zoo:
-        if torch.cuda.is_available():
-            teacher.load_state_dict(torch.load(teacher_model_dir))
-            teacher.cuda()
-        else:
-            teacher.load_state_dict(torch.load(
-                teacher_model_dir, map_location=torch.device('cpu')))
-        teacher.eval()
+
+    cuda = torch.cuda.is_available()
+    # cuda = False
+
     # Load student
     if args.student in ["jitnet", "u2net", "u2netp"]:
-        if torch.cuda.is_available():
+        if cuda:
             student.load_state_dict(torch.load(student_model_dir))
         else:
             student.load_state_dict(torch.load(
                 student_model_dir, map_location=torch.device('cpu')))
-    if torch.cuda.is_available():
+    if cuda:
         student.cuda()
+    else:
+        student.share_memory()
+        
     # student.eval()
 
     # --------- 3. threads setup ---------
@@ -389,39 +530,16 @@ def main():
         reducer = threading.Thread(target=paint_thread_func, args=(
             not args.headless, args.output
         ))
+    teacher_thread = threading.Thread(target=teacher_matching_func, args=(
+        student, args.teacher, cuda, args.teacher_mode, args.all_classes
+    ))
     producer.start()
     reducer.start()
-
-    critereon = nn.BCELoss(reduction='none')
-    optimizer = torch.optim.SGD(student.parameters(), lr=0.01, momentum=0.0)
+    teacher_thread.start()
 
     t_loop = datetime.now()
-    frame_until_teach = 0
-    U_MAX = 8
-    DELTA_MIN = 8
-    DELTA_MAX = 64
-    LOSS_THRESH = 0.001
-    delta = DELTA_MIN
-    delta_remain = 1
     # cnt = 0
     # --------- 4. inference for each image ---------
-
-    def teacher_infer(data_test):
-        if model_zoo:
-            data_test = data_test['np_image']
-            data_test = data_test[:,:,::-1]
-        else:
-            data_test = data_test['image'].unsqueeze(0)
-            data_test = data_test.type(torch.FloatTensor)
-            if torch.cuda.is_available():
-                data_test = data_test.cuda()
-        td1, td2, td3, td4, td5, td6, td7 = teacher(data_test)
-        pred = td1.squeeze(0).squeeze(0).detach().float()
-        #pred = torch.clamp(pred * 2 - 1, 0, 1)
-        if args.hardedge:
-            pred = (pred > 0.5).bool().float()
-        del td1, td2, td3, td4, td5, td6, td7
-        return pred
 
     a = datetime.now()
     if args.teacher_mode:
@@ -429,80 +547,28 @@ def main():
             data_test = student_inference_queue.get()
             if data_test == "kill":
                 print("Pytorch thread exiting gracefully")
-                student_result_queue.put("kill")
+                teacher_matching_queue.put("kill")
                 exit()
-            pred = teacher_infer(data_test)
-            student_result_queue.put(pred)
-            del pred
+            teacher_matching_queue.put(data_test)
     # b = 0
     # c = 0
     else:
+        torch.autograd.set_detect_anomaly(True)
         while True:
-            delta_remain -= 1
             data_test = student_inference_queue.get()
             if data_test == "kill":
                 print("Pytorch thread exiting gracefully")
                 student_result_queue.put("kill")
+                teacher_matching_queue.put("kill")
                 exit()
             inputs_test = data_test['image'].unsqueeze(0)
             inputs_test = inputs_test.type(torch.FloatTensor)
-            if torch.cuda.is_available():
+            if cuda:
                 inputs_test = inputs_test.cuda()
-            # a = datetime.now()
-            # print(inputs_test)
             d1, d2, d3, d4, d5, d6, d7 = student(inputs_test)
-            # b += (datetime.now() - a).microseconds
-            # c += 1
-            # print(b/c)
 
-            # normalization
-            pred = d1[:, 0, :, :]
-            if delta_remain <= 0:
-                if torch.isnan(pred).any():
-                    print("WARN: PRED NAN")
-                    # print(pred)
-                    # print(pred.max())
-                    # print(pred.min())
-                    continue
-                # trigger teacher learning
-                teacher_pred = teacher_infer(data_test)
-
-                loss = critereon(pred, teacher_pred)
-                loss *= ((teacher_pred * 5) + 1) / 6
-                loss = loss.mean()
-                budget = U_MAX
-                # cnt+=1
-                # if cnt == 10:
-                #     cnt = 0
-                #     print('loss', loss.item())
-                #     print('time', datetime.now() - a)
-                #     a = datetime.now()
-
-                if loss.item() > LOSS_THRESH:
-                    # Acceptable loss, skip teaching
-                    while loss.item() > LOSS_THRESH and budget > 0:
-                        if loss > 0.5:
-                            loss /= torch.norm(loss.detach())
-                        optimizer.zero_grad()
-                        loss.backward()
-                        optimizer.step()
-                        d1, d2, d3, d4, d5, d6, d7 = student(inputs_test)
-                        pred = d1[:, 0, :, :]
-                        loss = critereon(pred, teacher_pred)
-                        loss *= ((teacher_pred * 6) + 1) / 6
-                        loss = loss.mean()
-                        budget -= 1
-                if loss.item() <= LOSS_THRESH:
-                    # Loss still bad after training, decrease delay
-                    delta = min(DELTA_MAX, 2 * delta)
-                else:
-                    delta = max(DELTA_MIN, delta // 2)
-                delta_remain = delta
-                del teacher_pred
-            pred = pred.squeeze(0).detach()
-            #pred = torch.clamp(pred * 2 - 1, 0, 1)
-            if args.hardedge:
-                pred = (pred > 0.5).bool().float()
+            pred = d1[0, 0, :, :].detach()
+            teacher_matching_queue.put(data_test)
             student_result_queue.put(pred)
             del d1, d2, d3, d4, d5, d6, d7, pred
 

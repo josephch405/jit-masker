@@ -33,7 +33,11 @@ class basic_block(nn.Module):
             out = self.upsample(out)
         return out
 
+def _upsample_like(src,tar):
 
+    src = F.upsample(src,size=tar.shape[2:],mode='bilinear')
+
+    return src
 
 
 class JITNET(nn.Module):
@@ -91,6 +95,7 @@ class JITNET(nn.Module):
         self._initialize_weights()
 
     def forward(self, x):
+        _x = x
         x = self.enc1(x)
         x = self.enc2(x)
         down_x = []
@@ -105,6 +110,7 @@ class JITNET(nn.Module):
         x = self.dec1(x)
         x = self.dec2(x)
         x = self.dec_upsample(x)
+        x = _upsample_like(x, _x)
         x = self.final(x)
         output = x
 
