@@ -49,7 +49,7 @@ student_result_queue = queue.Queue(1)
 {   image:      original torch tensor
     np_image:   original numpy image
     id:         id of associated video  }   '''
-teacher_matching_queue = queue.Queue(8)
+teacher_matching_queue = queue.Queue(2)
 
 # TODO: make abstract or flagify
 img_bg = io.imread("data/example_bgs/tokyo.jpg")
@@ -59,10 +59,13 @@ img_bg_resized = None
 
 def paint_output(image_name, pred, orig, d_dir, width=None, height=None):
     # predict = (pred > 0.5).float()
+    global img_bg_resized
     predict = pred.squeeze().float()
     predict = torch.clamp(predict * 4 - 2, 0, 1)
     predict = predict.cpu().data.numpy()
     del pred
+    if predict.sum() < predict.size * 0.05 and img_bg_resized is not None:
+        return img_bg_resized
 
     im = Image.fromarray(predict*255).convert('RGB')
     img_name = image_name.split("/")[-1]
@@ -70,7 +73,6 @@ def paint_output(image_name, pred, orig, d_dir, width=None, height=None):
     orig_image_arr = orig
     pred_mask_arr = np.array(im.resize(
         (orig_image_arr.shape[1], orig_image_arr.shape[0]), resample=Image.BILINEAR), dtype=np.float32)
-    global img_bg_resized
     if img_bg_resized is None:
         img_bg_resized = np.array(img_bg.resize(
             (orig_image_arr.shape[1], orig_image_arr.shape[0]), resample=Image.BILINEAR))
@@ -95,7 +97,7 @@ def np_img_to_torch(np_img):
     return torch.from_numpy(tmpImg)
 
 
-def np_img_resize(np_img, width=320, height=320):
+def np_img_resize(np_img, width=240, height=240):
     resized_img = Image.fromarray(np_img).convert('RGB')
     resized_img = resized_img.resize(
         (width, height), resample=Image.BILINEAR)
@@ -272,22 +274,13 @@ def score_thread_func(groundtruth, all_classes):
         union = pred_mask | orig_label_np
         intersection = pred_mask & orig_label_np
 
-        if union.sum() == 0:
-            score = 1
+        if orig_label_np.mean() < 0.05:
+            # frame was empty, score is accuracy over frame
+            score = (pred_mask == orig_label_np).mean()
         else:
             score = intersection.sum() / union.sum()
-        if score < 0.1:
-            # cnt += 1
-            # print(score)
-            1  # TODO: figure out good metric for empty labels
-            # print(cnt)
-            # id = orig_image["id"].split('/')
-            # print(id[-2] +'_' + id[-1])
-        else:
-            scores_clamped.append(score)
         scores.append(score)
         print('scores: ' + str(sum(scores) / len(scores)))
-    print('scores_clamped: ' + str(sum(scores_clamped) / len(scores_clamped)))
     exit()
 
 
@@ -296,7 +289,7 @@ def iou_acc_torch(label, pred):
     pred = pred.detach() > 0.5
     label_mean = label.sum().item() / label.numel()
     if label_mean < 0.05:
-        return 0 if pred.sum().item() > 0 else 1
+        return 0 if pred.sum().item() > 0.05 else 1
         # return 1 - pred.sum().item() / pred.numel()
     else:
         intersection = label & pred
@@ -375,22 +368,26 @@ def teacher_matching_func(
             del pred
 
     else:
+        budget = U_MAX
+        pred = None
+        teacher_pred = None
         while True:
+            acc = 1
             delta_remain -= 1
             data_test = teacher_matching_queue.get()
             if data_test == "kill":
                 print("Teacher thread exiting gracefully")
                 exit()
 
-            # Run training if delta triggered
-            # print(delta_remain)
+            # Delta triggered, reset everything
             if delta_remain <= 0:
                 inputs_test = data_test['image'].unsqueeze(0)
                 inputs_test = inputs_test.type(torch.FloatTensor)
                 if cuda:
                     inputs_test = inputs_test.cuda()
-                d1, d2, d3, d4, d5, d6, d7 = student(inputs_test)
+                d1, _, _, _, _, _, _ = student(inputs_test)
                 pred = d1[:, 0, :, :]
+                del d1
                 if torch.isnan(pred).any():
                     print("WARN: PRED NAN")
                     continue
@@ -400,39 +397,32 @@ def teacher_matching_func(
                     teacher_pred = teacher_pred.cpu()
 
                 budget = U_MAX
-
                 acc = iou_acc_torch(teacher_pred, pred)
+                delta_remain = delta
 
-                # Loss too high, teach
-                while acc < ACC_THRESH and budget > 0:
-                    # if loss > 0.5:
-                    #     loss /= torch.norm(loss.detach())
-                    loss = critereon(pred, teacher_pred)
-                    # loss *= ((teacher_pred * 5) + 1) / 6
-                    loss = loss.mean()
-                    a = datetime.now()
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
-                    a = datetime.now()
-                    d1, d2, d3, d4, d5, d6, d7 = student(inputs_test)
-                    pred = d1[:, 0, :, :]
-                    acc = iou_acc_torch(teacher_pred, pred)
-                    budget -= 1
+            if acc < ACC_THRESH and budget > 0:
+                loss = critereon(pred, teacher_pred)
+                # loss *= ((teacher_pred * 5) + 1) / 6
+                loss = loss.mean()
+                a = datetime.now()
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                a = datetime.now()
+                d1, d2, d3, d4, d5, d6, d7 = student(inputs_test)
+                pred = d1[:, 0, :, :]
+                acc = iou_acc_torch(teacher_pred, pred)
+                budget -= 1
                 # print('budget remain')
                 # print(budget)
                 # print(acc)
-                if acc < ACC_THRESH:
-                    # Loss still bad after training, decrease delay
-                    delta = min(DELTA_MAX, 2 * delta)
-                else:
-                    delta = max(DELTA_MIN, delta // 2)
-                delta_remain = delta
-                del teacher_pred
-                del d1, d2, d3, d4, d5, d6, d7, pred
-            # pred = pred.squeeze(0).detach()
-            #pred = torch.clamp(pred * 2 - 1, 0, 1)
-            # student_result_queue.put(pred)
+            elif acc < ACC_THRESH and budget == 0:
+                # Loss still bad after training, decrease delay
+                delta = min(DELTA_MAX, 2 * delta)
+                budget -= 1
+            elif budget == 0:
+                delta = max(DELTA_MIN, delta // 2)
+                budget -= 1
 
 
 def main():
@@ -553,7 +543,6 @@ def main():
     # b = 0
     # c = 0
     else:
-        torch.autograd.set_detect_anomaly(True)
         while True:
             data_test = student_inference_queue.get()
             if data_test == "kill":
@@ -566,7 +555,6 @@ def main():
             if cuda:
                 inputs_test = inputs_test.cuda()
             d1, d2, d3, d4, d5, d6, d7 = student(inputs_test)
-
             pred = d1[0, 0, :, :].detach()
             teacher_matching_queue.put(data_test)
             student_result_queue.put(pred)
