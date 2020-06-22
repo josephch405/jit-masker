@@ -35,21 +35,22 @@ import models
 ''' A > B
 {   np_image:   original numpy image
     image:      processed Torch tensor of image
+    t:          timestamp of image capture
     id:         id of associated video  }   '''
 student_inference_queue = queue.Queue(1)
 ''' A > C
 {   image:      original numpy image
     label?:     original numpy label
     id:         id of associated video  }   '''
-orig_image_queue = queue.Queue()
+orig_image_queue = queue.Queue(1)
 ''' B > C
-    pred: predicted torch tensor'''
+{   pred: predicted torch tensor        }   '''
 student_result_queue = queue.Queue(1)
 ''' B > D
 {   image:      original torch tensor
     np_image:   original numpy image
     id:         id of associated video  }   '''
-teacher_matching_queue = queue.Queue(2)
+teacher_matching_queue = queue.Queue(1)
 
 # TODO: make abstract or flagify
 img_bg = io.imread("data/example_bgs/tokyo.jpg")
@@ -163,15 +164,14 @@ def people_thread_func():
 
 
 def cv2_thread_func(video_name):
+    video_name = int(video_name) if video_name.isnumeric() else video_name
     video = cv2.VideoCapture(video_name)
     i = 0
     try:
         while True:
+            t = datetime.now()
             succ, image = video.read()
             i += 1
-            # image = cv2.resize(image,
-            #     (image.shape[1] * 320 // image.shape[0], 320),
-            #     interpolation=cv2.INTER_AREA)
 
             image = image[:, :, ::-1]
             orig_image = image.copy()
@@ -185,7 +185,8 @@ def cv2_thread_func(video_name):
 
             student_inference_queue.put({
                 "np_image": resized_img,  # orig_image[:,:,::-1],
-                "image": tensor
+                "image": tensor,
+                "t": t
             })
     except Exception as e:
         print(i)
@@ -214,12 +215,12 @@ def paint_thread_func(show=True, keep_video_at=""):
                                           'M', 'P', '4', 'V'),
                                       # TODO: get fps from cv2 thread message
                                       25, (orig_image_np.shape[1], orig_image_np.shape[0]))
-        pred_mask = student_result_queue.get()
+        pred_obj = student_result_queue.get()
         total_frames += 1
-        if pred_mask == "kill":
+        if pred_obj == "kill":
             break
         merged_image = paint_output(
-            "", pred_mask, orig_image_np, "")[:, :, ::-1]
+            "", pred_obj["pred"], orig_image_np, "")[:, :, ::-1]
         if show:
             cv2.imshow("im", merged_image)
         print("avg time/frame:", (datetime.now() - t) / total_frames)
@@ -261,10 +262,11 @@ def score_thread_func(groundtruth, all_classes):
             mask = (mask[:, :, 0] * 255).astype(np.uint8)
             orig_label_np = mask
             del td1, td2, td3, td4, td5, td6, td7
-        pred_mask = student_result_queue.get()
+        pred_obj = student_result_queue.get()
         # total_frames += 1
-        if pred_mask == "kill":
+        if pred_obj == "kill":
             break
+        pred_mask = pred_obj['pred']
         pred_mask = ((pred_mask > 0.5).bool().cpu().numpy()
                      * 255).astype(np.uint8)
         pred_mask = np_img_resize(
@@ -276,11 +278,11 @@ def score_thread_func(groundtruth, all_classes):
 
         if orig_label_np.mean() < 0.05:
             # frame was empty, score is accuracy over frame
-            score = (pred_mask == orig_label_np).mean()
+            score = (pred_mask == 0).mean()
         else:
             score = intersection.sum() / union.sum()
         scores.append(score)
-        print('scores: ' + str(sum(scores) / len(scores)))
+    print('scores: ' + str(sum(scores) / len(scores)))
     exit()
 
 
@@ -337,8 +339,7 @@ def teacher_matching_func(
         teacher.eval()
 
     critereon = nn.BCELoss(reduction='none')
-    optimizer = torch.optim.SGD(student.parameters(), lr=0.04, momentum=0.0)
-
+    optimizer = torch.optim.SGD(student.parameters(), lr=0.2, momentum=0.0)
     def teacher_infer(data_test):
         if model_zoo:
             data_test = data_test['np_image']
@@ -364,21 +365,22 @@ def teacher_matching_func(
                 student_result_queue.put("kill")
                 exit()
             pred = teacher_infer(data_test)
-            student_result_queue.put(pred)
+            student_result_queue.put({
+                "pred": pred
+            })
             del pred
 
     else:
         budget = U_MAX
         pred = None
         teacher_pred = None
+        acc = 0
         while True:
-            acc = 1
             delta_remain -= 1
             data_test = teacher_matching_queue.get()
             if data_test == "kill":
                 print("Teacher thread exiting gracefully")
                 exit()
-
             # Delta triggered, reset everything
             if delta_remain <= 0:
                 inputs_test = data_test['image'].unsqueeze(0)
@@ -400,15 +402,16 @@ def teacher_matching_func(
                 acc = iou_acc_torch(teacher_pred, pred)
                 delta_remain = delta
 
-            if acc < ACC_THRESH and budget > 0:
-                loss = critereon(pred, teacher_pred)
+            elif acc < ACC_THRESH and budget > 0:
+                # Need to train, in budget
+                loss = critereon(pred.squeeze(0), teacher_pred)
                 # loss *= ((teacher_pred * 5) + 1) / 6
                 loss = loss.mean()
                 a = datetime.now()
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                a = datetime.now()
+                # a = datetime.now()
                 d1, d2, d3, d4, d5, d6, d7 = student(inputs_test)
                 pred = d1[:, 0, :, :]
                 acc = iou_acc_torch(teacher_pred, pred)
@@ -417,12 +420,13 @@ def teacher_matching_func(
                 # print(budget)
                 # print(acc)
             elif acc < ACC_THRESH and budget == 0:
-                # Loss still bad after training, decrease delay
+                # Need to train, out of budget
                 delta = min(DELTA_MAX, 2 * delta)
                 budget -= 1
-            elif budget == 0:
+            elif acc > ACC_THRESH and budget > 0:
+                # No need to train, clear budget
                 delta = max(DELTA_MIN, delta // 2)
-                budget -= 1
+                budget = 0
 
 
 def main():
@@ -543,8 +547,10 @@ def main():
     # b = 0
     # c = 0
     else:
+        ts = []
         while True:
             data_test = student_inference_queue.get()
+            t = datetime.now()
             if data_test == "kill":
                 print("Pytorch thread exiting gracefully")
                 student_result_queue.put("kill")
@@ -556,8 +562,12 @@ def main():
                 inputs_test = inputs_test.cuda()
             d1, d2, d3, d4, d5, d6, d7 = student(inputs_test)
             pred = d1[0, 0, :, :].detach()
+            ts.append((datetime.now() - t).microseconds)
             teacher_matching_queue.put(data_test)
-            student_result_queue.put(pred)
+            student_result_queue.put({
+                "pred": pred,
+                "t": data_test["t"]
+            })
             del d1, d2, d3, d4, d5, d6, d7, pred
 
 

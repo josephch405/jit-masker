@@ -35,7 +35,7 @@ class basic_block(nn.Module):
 
 def _upsample_like(src,tar):
 
-    src = F.upsample(src,size=tar.shape[2:],mode='bilinear')
+    src = F.interpolate(src,size=tar.shape[2:],mode='bilinear')
 
     return src
 
@@ -114,7 +114,7 @@ class JITNET(nn.Module):
         x = self.final(x)
         output = x
 
-        return F.sigmoid(output),0,0,0,0,0,0
+        return torch.sigmoid(output),0,0,0,0,0,0
         
     def _initialize_weights(self):
         for module in self.modules():
@@ -213,7 +213,7 @@ class JITNET_SIDE(nn.Module):
         output = torch.cat(final_x, dim=1)
         print(output.shape)
         
-        return F.sigmoid(output),0,0,0,0,0,0
+        return torch.sigmoid(output),0,0,0,0,0,0
         
     def _initialize_weights(self):
         for module in self.modules():
