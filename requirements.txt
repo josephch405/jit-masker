@@ -2,7 +2,7 @@ torch==1.5
 torchvision
 numpy
 scikit-image==0.14.0
-Pillow==6.2.2
+Pillow==8.1.1
 # glob
 opencv-python
 detectron2==0.1.3
